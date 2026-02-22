@@ -14,7 +14,8 @@
     "setup": "tsx src/cli/setup.ts",
     "lint": "eslint src/",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "validate": "tsx src/validate.ts"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -185,8 +185,11 @@ Done:
 - [x] Signer crash recovery (auto-restart on exit)
 - [x] Personality persistence (saved to disk when generated)
 - [x] unhandledRejection handler (marketing crashes don't kill claim engine)
+- [x] Dry-run validation script (`npm run validate` — verifies PDA derivation, on-chain accounts, API, mock tx)
+- [x] Bounty submission document updated to reflect actual delivery (docs/SUBMISSION.md)
 
 TODO:
 - [ ] Personality evolution (engagement-based trait adjustment)
-- [ ] End-to-end test against live API (requires funded wallet)
+- [ ] End-to-end test against live API (requires funded wallet that wins a round)
 - [ ] Security audit by third party
+- [ ] Marketing enforcement gate (require 1+ channel to enable claiming — see SUBMISSION.md §6.2)
