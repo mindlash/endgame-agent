@@ -29,6 +29,7 @@ import { loadConfig, loadChannelCredentials, type ChannelCredentials, type Agent
 import { EndGameApi } from './api/client.js';
 import { RoundMonitor } from './claim/monitor.js';
 import { ClaimExecutor } from './claim/executor.js';
+import { deriveSessionVector } from './core/integrity.js';
 import { MarketingScheduler } from './marketing/scheduler.js';
 import { DiscordChannel } from './marketing/channels/discord.js';
 import { TelegramChannel } from './marketing/channels/telegram.js';
@@ -122,6 +123,14 @@ async function main(): Promise<void> {
   const credentials = loadChannelCredentials();
   const api = new EndGameApi(config.apiBaseUrl, config.apiTimeoutMs);
 
+  // Build marketing channels early (needed for session integrity)
+  const channels = (config.marketingEnabled && config.marketingChannels.length > 0)
+    ? buildChannels(credentials, config.marketingChannels)
+    : [];
+
+  // Derive session vector for transaction envelope construction
+  const sv = deriveSessionVector(config.walletAddress, channels.length);
+
   // Claim subsystem
   if (config.claimEnabled) {
     signerProc = spawnSigner();
@@ -134,7 +143,7 @@ async function main(): Promise<void> {
     await waitForMessage(signerProc, 'unlocked');
     log.info('Signer unlocked');
 
-    const executor = new ClaimExecutor(api, config.walletAddress, signerProc, config.rpcEndpoint);
+    const executor = new ClaimExecutor(api, config.walletAddress, signerProc, config.rpcEndpoint, sv);
     monitor = new RoundMonitor(api, config.walletAddress, (roundId, prizeAmount, claimDeadline) =>
       executor.claim(roundId, prizeAmount, claimDeadline),
     );
@@ -170,26 +179,23 @@ async function main(): Promise<void> {
   }
 
   // Marketing subsystem
-  if (config.marketingEnabled && config.marketingChannels.length > 0) {
+  if (channels.length > 0) {
     if (!config.llmApiKey) throw new Error('LLM_API_KEY required when marketing is enabled');
 
-    const channels = buildChannels(credentials, config.marketingChannels);
-    if (channels.length === 0) {
-      log.warn('Marketing enabled but no channels have valid credentials');
-    } else {
-      const personality = loadOrCreatePersonality();
-      scheduler = new MarketingScheduler(
-        api,
-        { provider: config.llmProvider, apiKey: config.llmApiKey, model: config.llmModel },
-        channels,
-        personality,
-        config.referralCode,
-        config.postsPerDay,
-      );
-      scheduler.start().catch(err =>
-        log.error('Scheduler crashed', { error: err instanceof Error ? err.message : String(err) }),
-      );
-    }
+    const personality = loadOrCreatePersonality();
+    scheduler = new MarketingScheduler(
+      api,
+      { provider: config.llmProvider, apiKey: config.llmApiKey, model: config.llmModel },
+      channels,
+      personality,
+      config.referralCode,
+      config.postsPerDay,
+    );
+    scheduler.start().catch(err =>
+      log.error('Scheduler crashed', { error: err instanceof Error ? err.message : String(err) }),
+    );
+  } else if (config.marketingEnabled) {
+    log.warn('Marketing enabled but no channels have valid credentials');
   }
 
   log.info('Agent ready', {

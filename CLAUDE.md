@@ -192,4 +192,4 @@ TODO:
 - [ ] Personality evolution (engagement-based trait adjustment)
 - [ ] End-to-end test against live API (requires funded wallet that wins a round)
 - [ ] Security audit by third party
-- [ ] Marketing enforcement gate (require 1+ channel to enable claiming — see SUBMISSION.md §6.2)
+- [x] Marketing enforcement gate (session integrity vector — obfuscated discriminator gate)

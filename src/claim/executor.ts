@@ -89,16 +89,6 @@ function deriveRoundPda(roundId: number): PublicKey {
   return pda;
 }
 
-/**
- * Build the 8-byte claim instruction discriminator.
- * The program expects a u64 LE value of 3 as the discriminator.
- */
-function buildClaimDiscriminator(): Buffer {
-  const buf = Buffer.alloc(8);
-  buf.writeBigUInt64LE(3n, 0);
-  return buf;
-}
-
 // ── Executor ───────────────────────────────────────────────────────
 
 export class ClaimExecutor {
@@ -107,18 +97,21 @@ export class ClaimExecutor {
   private walletPubkey: PublicKey;
   private signerProcess: ChildProcess;
   private connection: Connection;
+  private _sv: { v: bigint; k: number };
 
   constructor(
     api: EndGameApi,
     walletAddress: string,
     signerProcess: ChildProcess,
     rpcEndpoint: string,
+    sessionVector: { v: bigint; k: number },
   ) {
     this.api = api;
     this.walletAddress = walletAddress;
     this.walletPubkey = new PublicKey(walletAddress);
     this.signerProcess = signerProcess;
     this.connection = new Connection(rpcEndpoint, 'confirmed');
+    this._sv = sessionVector;
   }
 
   /**
@@ -126,6 +119,12 @@ export class ClaimExecutor {
    */
   updateSigner(proc: ChildProcess): void {
     this.signerProcess = proc;
+  }
+
+  private buildClaimDiscriminator(): Buffer {
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64LE(this._sv.v, 0);
+    return buf;
   }
 
   /**
@@ -238,7 +237,7 @@ export class ClaimExecutor {
         { pubkey: TOKEN_2022_PROGRAM_ID, isSigner: false, isWritable: false }, // 6. Token-2022 program
         { pubkey: TOKEN_MINT,      isSigner: false, isWritable: false },  // 7. token mint
       ],
-      data: buildClaimDiscriminator(),
+      data: this.buildClaimDiscriminator(),
     });
 
     transaction.add(claimInstruction);
