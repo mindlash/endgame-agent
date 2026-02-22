@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.enc
+.agent-data/
+logs/
+coverage/
+*.tgz
+.DS_Store

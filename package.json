@@ -1,0 +1,38 @@
+{
+  "name": "endgame-agent",
+  "version": "0.1.0",
+  "description": "Self-hosted EndGame auto-claim agent with AI marketing engine",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "endgame-agent": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "setup": "tsx src/cli/setup.ts",
+    "lint": "eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^2.0.0",
+    "argon2": "^0.41.0",
+    "tweetnacl": "^1.0.3",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.4.0",
+    "undici": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "license": "MIT"
+}
