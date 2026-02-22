@@ -53,6 +53,30 @@ export class EndGameApi {
     }
   }
 
+  private async post<T>(path: string, payload: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { ...REQUIRED_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`API ${res.status}: ${path}`);
+      }
+
+      const body = (await res.json()) as ApiResponse<T>;
+      return body.data ?? (body as unknown as T);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // ── Round monitoring ──────────────────────────────────────────────
 
   async getCurrentRound() {
@@ -127,6 +151,16 @@ export class EndGameApi {
 
   async getActiveChallenges() {
     return this.get<Array<Record<string, unknown>>>('/api/challenges/active');
+  }
+
+  // ── Claiming ─────────────────────────────────────────────────────
+
+  async submitClaim(payload: {
+    round_id: string;
+    wallet: string;
+    signature: string;
+  }): Promise<{ tx_signature: string }> {
+    return this.post<{ tx_signature: string }>('/api/game/claim', payload);
   }
 
   // ── Game pulse ────────────────────────────────────────────────────

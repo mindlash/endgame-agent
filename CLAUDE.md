@@ -5,6 +5,7 @@
 Building the official EndGame Agent for a 50M $END bounty (5% of total supply).
 Self-hosted bot that auto-claims lottery prizes and runs AI-driven marketing.
 Bounty spec: https://endgame.cash/bounty (may be updated — re-check periodically)
+Official game guide: https://endgame.cash/guide (complete mechanics reference — use for marketing content accuracy)
 
 ## Dev Context (from direct conversation)
 

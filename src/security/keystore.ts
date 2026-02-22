@@ -17,6 +17,7 @@
  * The LLM/marketing components have ZERO access to this subprocess.
  */
 
+import nacl from 'tweetnacl';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('keystore');
@@ -50,7 +51,6 @@ export async function encryptKey(
   password: string,
 ): Promise<EncryptedKeyfile> {
   const argon2 = await import('argon2');
-  const nacl = await import('tweetnacl');
   const crypto = await import('node:crypto');
 
   const salt = crypto.randomBytes(SALT_LENGTH);
@@ -95,7 +95,6 @@ export async function decryptKey(
   password: string,
 ): Promise<Uint8Array> {
   const argon2 = await import('argon2');
-  const nacl = await import('tweetnacl');
 
   const salt = Buffer.from(keyfile.salt, 'base64');
   const nonce = Buffer.from(keyfile.nonce, 'base64');
@@ -125,6 +124,5 @@ export async function decryptKey(
  * Used by the isolated signing subprocess.
  */
 export function signMessage(message: Uint8Array, privateKey: Uint8Array): Uint8Array {
-  const nacl = require('tweetnacl') as typeof import('tweetnacl');
   return nacl.sign.detached(message, privateKey);
 }
