@@ -149,7 +149,7 @@ export class ClaimExecutor {
       log.info('Round verified as claimable', { roundId });
 
       // 2. Build the Solana transaction
-      const transaction = await this.buildClaimTransaction(roundId);
+      const { transaction, blockhash, lastValidBlockHeight } = await this.buildClaimTransaction(roundId);
 
       // 3. Sign via IPC to isolated signer subprocess
       const serializedMessage = transaction.serializeMessage();
@@ -168,7 +168,7 @@ export class ClaimExecutor {
 
       // 4. Submit with retry logic
       const rawTransaction = transaction.serialize();
-      const txSignature = await this.sendWithRetry(rawTransaction);
+      const txSignature = await this.sendWithRetry(rawTransaction, blockhash, lastValidBlockHeight);
 
       const latencyMs = Date.now() - start;
       log.info('Claim transaction confirmed', { roundId, txSignature, latencyMs });
@@ -194,7 +194,7 @@ export class ClaimExecutor {
    * Build the claim transaction with the correct instruction and accounts.
    * If the winner does not have a Token-2022 ATA, creates one first.
    */
-  private async buildClaimTransaction(roundId: number): Promise<Transaction> {
+  private async buildClaimTransaction(roundId: number): Promise<{ transaction: Transaction; blockhash: string; lastValidBlockHeight: number }> {
     const roundPda = deriveRoundPda(roundId);
 
     // Get the winner's associated token account for the Token-2022 mint
@@ -248,14 +248,14 @@ export class ClaimExecutor {
     transaction.lastValidBlockHeight = lastValidBlockHeight;
     transaction.feePayer = this.walletPubkey;
 
-    return transaction;
+    return { transaction, blockhash, lastValidBlockHeight };
   }
 
   /**
    * Submit a signed raw transaction with retry logic.
    * Retries up to SEND_RETRIES times (matching the website's behavior of 12 retries).
    */
-  private async sendWithRetry(rawTransaction: Buffer): Promise<string> {
+  private async sendWithRetry(rawTransaction: Buffer, blockhash: string, lastValidBlockHeight: number): Promise<string> {
     let lastError = '';
 
     for (let attempt = 1; attempt <= SEND_RETRIES; attempt++) {
@@ -268,11 +268,7 @@ export class ClaimExecutor {
 
         // Wait for confirmation
         const confirmation = await this.connection.confirmTransaction(
-          {
-            signature: txSignature,
-            blockhash: '', // We already verified; use the default timeout
-            lastValidBlockHeight: 0,
-          },
+          { signature: txSignature, blockhash, lastValidBlockHeight },
           'confirmed',
         );
 

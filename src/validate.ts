@@ -24,10 +24,9 @@ import {
 // ── Constants ──────────────────────────────────────────────────────
 
 const RPC_ENDPOINTS = [
+  process.env['SOLANA_RPC_URL'],
   'https://api.mainnet-beta.solana.com',
-  'https://shy-magical-gadget.solana-mainnet.quiknode.pro/b85de90502f455a0dbed7f0e4c4b5ef3c2f41687/',
-  'https://mainnet.helius-rpc.com/?api-key=0bab371e-2aae-4bc1-8a31-cde10e271382',
-];
+].filter(Boolean) as string[];
 const API_BASE = 'https://api.endgame.cash';
 const API_HEADERS = {
   Accept: 'application/json',

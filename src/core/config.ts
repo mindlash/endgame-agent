@@ -83,7 +83,7 @@ export function loadConfig(): AgentConfig {
     llmModel: process.env['LLM_MODEL'],
     apiBaseUrl: env('API_BASE_URL', 'https://api.endgame.cash'),
     apiTimeoutMs: parseInt(env('API_TIMEOUT_MS', '15000')),
-    rpcEndpoint: env('SOLANA_RPC_URL', 'https://shy-magical-gadget.solana-mainnet.quiknode.pro/b85de90502f455a0dbed7f0e4c4b5ef3c2f41687/'),
+    rpcEndpoint: env('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
     encryptedKeyPath: env('KEYFILE_PATH', '.agent-data/keyfile.json'),
   };
 }

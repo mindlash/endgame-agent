@@ -1,0 +1,12 @@
+.env
+.env.*
+.agent-data/
+.git/
+.claude/
+node_modules/
+coverage/
+logs/
+tests/
+docs/
+*.tgz
+.DS_Store

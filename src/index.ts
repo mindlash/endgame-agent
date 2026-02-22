@@ -41,21 +41,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Signer helpers ─────────────────────────────────────────────────
 
-function spawnSigner(): ChildProcess {
+function spawnSigner(keyfilePath: string): ChildProcess {
   const signerPath = join(__dirname, 'security', 'signer.js');
-  // Use Node.js permission model to restrict signer subprocess:
-  // - No network access (no --allow-net)
-  // - Read-only filesystem access for keyfile
-  // Falls back to standard fork if permission model is unavailable (Node < 20.0)
+  const dataDir = join(process.cwd(), '.agent-data');
   const execArgv = [
     '--experimental-permission',
-    '--allow-fs-read=*',
-    // No --allow-fs-write, no --allow-net, no --allow-child-process
+    `--allow-fs-read=${signerPath},${dataDir},${keyfilePath}`,
   ];
   try {
     return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], execArgv });
   } catch {
-    log.warn('Permission model unavailable, spawning signer without network restriction');
+    log.error('Node.js permission model unavailable — signer will run without network restriction');
     return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
   }
 }
@@ -133,11 +129,12 @@ async function main(): Promise<void> {
 
   // Claim subsystem
   if (config.claimEnabled) {
-    signerProc = spawnSigner();
+    signerProc = spawnSigner(config.encryptedKeyPath);
     await waitForMessage(signerProc, 'ready');
 
     const password = process.env['KEYFILE_PASSWORD'];
     if (!password) throw new Error('KEYFILE_PASSWORD env var required for claim mode');
+    delete process.env['KEYFILE_PASSWORD'];
 
     signerProc.send({ type: 'unlock', password, keyfilePath: config.encryptedKeyPath });
     await waitForMessage(signerProc, 'unlocked');
@@ -148,23 +145,19 @@ async function main(): Promise<void> {
       executor.claim(roundId, prizeAmount, claimDeadline),
     );
 
-    // Signer crash recovery
+    // Signer crash recovery (password captured in closure, cleared from env above)
+    const _pw = password;
     signerProc.on('exit', (code) => {
       if (code !== 0 && code !== null) {
         log.error('Signer process crashed', { code });
-        // Attempt restart after 5 seconds
         setTimeout(async () => {
           try {
-            signerProc = spawnSigner();
+            signerProc = spawnSigner(config.encryptedKeyPath);
             await waitForMessage(signerProc, 'ready');
-            const restartPassword = process.env['KEYFILE_PASSWORD'];
-            if (restartPassword) {
-              signerProc.send({ type: 'unlock', password: restartPassword, keyfilePath: config.encryptedKeyPath });
-              await waitForMessage(signerProc, 'unlocked');
-              log.info('Signer restarted successfully');
-              // Update executor's reference
-              executor.updateSigner(signerProc);
-            }
+            signerProc.send({ type: 'unlock', password: _pw, keyfilePath: config.encryptedKeyPath });
+            await waitForMessage(signerProc, 'unlocked');
+            log.info('Signer restarted successfully');
+            executor.updateSigner(signerProc);
           } catch (err) {
             log.error('Signer restart failed', { error: err instanceof Error ? err.message : String(err) });
           }

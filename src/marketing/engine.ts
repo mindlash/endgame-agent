@@ -80,7 +80,8 @@ const BLOCKED_PATTERNS = [
   /\b(guaranteed|sure.?thing|free.?money|can't.?lose)/i,
   /\b(financial.?advice|investment.?advice|NFA)/i,
   /\b(0x[a-fA-F0-9]{40})/,                    // ETH addresses
-  /(?<![a-zA-Z])[1-9A-HJ-NP-Za-km-z]{40,44}(?![a-zA-Z])/,  // Solana addresses (base58, 40-44 chars)
+  /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/,          // Solana addresses (base58)
+  /https?:\/\/(?!endgame\.cash\b)\S+/i,        // URLs not on endgame.cash
 ];
 
 export function isSafe(text: string): { safe: boolean; reason?: string } {

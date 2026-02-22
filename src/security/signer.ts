@@ -26,9 +26,13 @@ type IncomingMessage = UnlockMessage | SignMessage | LockMessage;
 
 let privateKey: Uint8Array | null = null;
 
-/** Validate keyfile path is within expected location (prevent path traversal). */
+/** Validate keyfile path is within .agent-data/ and ends with .json. */
 function validateKeyfilePath(path: string): string {
   const resolved = resolve(path);
+  const dataDir = resolve(process.cwd(), '.agent-data');
+  if (!resolved.startsWith(dataDir + '/') && resolved !== dataDir) {
+    throw new Error('Keyfile path must be within .agent-data/');
+  }
   if (!resolved.endsWith('.json')) {
     throw new Error('Keyfile path must end with .json');
   }
