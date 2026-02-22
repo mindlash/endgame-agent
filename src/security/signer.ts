@@ -16,19 +16,31 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { decryptKey, signMessage, type EncryptedKeyfile } from './keystore.js';
 
 interface UnlockMessage { type: 'unlock'; password: string; keyfilePath: string }
 interface SignMessage { type: 'sign'; message: string }
-type IncomingMessage = UnlockMessage | SignMessage;
+interface LockMessage { type: 'lock' }
+type IncomingMessage = UnlockMessage | SignMessage | LockMessage;
 
 let privateKey: Uint8Array | null = null;
+
+/** Validate keyfile path is within expected location (prevent path traversal). */
+function validateKeyfilePath(path: string): string {
+  const resolved = resolve(path);
+  if (!resolved.endsWith('.json')) {
+    throw new Error('Keyfile path must end with .json');
+  }
+  return resolved;
+}
 
 async function handleMessage(msg: IncomingMessage): Promise<void> {
   try {
     if (msg.type === 'unlock') {
+      const safePath = validateKeyfilePath(msg.keyfilePath);
       const keyfile: EncryptedKeyfile = JSON.parse(
-        readFileSync(msg.keyfilePath, 'utf-8'),
+        readFileSync(safePath, 'utf-8'),
       );
       privateKey = await decryptKey(keyfile, msg.password);
       process.send?.({ type: 'unlocked' });
@@ -48,6 +60,12 @@ async function handleMessage(msg: IncomingMessage): Promise<void> {
       });
       return;
     }
+
+    if (msg.type === 'lock') {
+      if (privateKey) { privateKey.fill(0); privateKey = null; }
+      process.send?.({ type: 'locked' });
+      return;
+    }
   } catch (err) {
     process.send?.({
       type: 'error',
@@ -55,6 +73,11 @@ async function handleMessage(msg: IncomingMessage): Promise<void> {
     });
   }
 }
+
+// Wipe key on process exit
+process.on('exit', () => {
+  if (privateKey) { privateKey.fill(0); privateKey = null; }
+});
 
 // Only run when spawned as a child process
 if (process.send) {

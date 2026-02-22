@@ -9,6 +9,7 @@ import type { ChannelAdapter } from '../engine.js';
 const log = createLogger('discord');
 
 const MAX_CONTENT_LENGTH = 2000;
+const FETCH_TIMEOUT_MS = 30_000;
 
 export class DiscordChannel implements ChannelAdapter {
   name = 'discord';
@@ -35,25 +36,32 @@ export class DiscordChannel implements ChannelAdapter {
     // Append ?wait=true so Discord returns the message object with id
     const url = this.webhookUrl + (this.webhookUrl.includes('?') ? '&wait=true' : '?wait=true');
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: text }),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: text }),
+        signal: controller.signal,
+      });
 
-    if (res.status === 429) {
-      const body = await res.json().catch(() => ({})) as Record<string, unknown>;
-      log.warn('Discord rate limited', { retryAfter: body['retry_after'] });
-      throw new Error(`Discord rate limited — retry after ${body['retry_after'] ?? 'unknown'}s`);
+      if (res.status === 429) {
+        const body = await res.json().catch(() => ({})) as Record<string, unknown>;
+        log.warn('Discord rate limited', { retryAfter: body['retry_after'] });
+        throw new Error(`Discord rate limited — retry after ${body['retry_after'] ?? 'unknown'}s`);
+      }
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Discord webhook failed (${res.status}): ${body}`);
+      }
+
+      const data = await res.json() as { id: string };
+      log.info('Posted to Discord', { postId: data.id });
+      return { postId: data.id };
+    } finally {
+      clearTimeout(timer);
     }
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`Discord webhook failed (${res.status}): ${body}`);
-    }
-
-    const data = await res.json() as { id: string };
-    log.info('Posted to Discord', { postId: data.id });
-    return { postId: data.id };
   }
 }

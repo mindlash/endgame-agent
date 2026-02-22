@@ -30,6 +30,32 @@ const CHAR_LIMITS: Record<string, number> = {
 };
 
 const LLM_TIMEOUT_MS = 30_000;
+const MAX_VALUE_LENGTH = 200;
+
+/**
+ * Sanitize API data before injecting into LLM prompts.
+ * Prevents prompt injection via crafted API responses by stripping
+ * non-data characters and truncating long strings.
+ */
+function sanitizeForPrompt(data: unknown): unknown {
+  if (data === null || data === undefined) return data;
+  if (typeof data === 'number' || typeof data === 'boolean') return data;
+  if (typeof data === 'string') {
+    // Strip characters that could be used for prompt injection
+    return data.replace(/[^\w\s.,%-:$/#@()]/g, '').slice(0, MAX_VALUE_LENGTH);
+  }
+  if (Array.isArray(data)) {
+    return data.slice(0, 10).map(sanitizeForPrompt);
+  }
+  if (typeof data === 'object') {
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      sanitized[key] = sanitizeForPrompt(value);
+    }
+    return sanitized;
+  }
+  return String(data).slice(0, MAX_VALUE_LENGTH);
+}
 
 function buildPrompt(
   channel: 'twitter' | 'discord' | 'telegram',
@@ -52,7 +78,7 @@ function buildPrompt(
   ].join('\n');
 
   const user = [
-    `Current game state:\n${JSON.stringify(gameContext, null, 2)}`,
+    `Current game state:\n${JSON.stringify(sanitizeForPrompt(gameContext), null, 2)}`,
     recentPosts.length
       ? `\nRecent posts (avoid similar themes):\n${recentPosts.slice(-5).join('\n---\n')}`
       : '',

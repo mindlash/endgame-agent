@@ -10,6 +10,7 @@ const log = createLogger('telegram');
 
 const MAX_CONTENT_LENGTH = 4096;
 const API_BASE = 'https://api.telegram.org';
+const FETCH_TIMEOUT_MS = 30_000;
 
 interface TelegramResponse {
   ok: boolean;
@@ -45,30 +46,37 @@ export class TelegramChannel implements ChannelAdapter {
 
     const url = `${API_BASE}/bot${this.botToken}/sendMessage`;
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: this.chatId,
-        text,
-        parse_mode: 'Markdown',
-        disable_web_page_preview: false,
-      }),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: this.chatId,
+          text,
+          parse_mode: 'Markdown',
+          disable_web_page_preview: false,
+        }),
+        signal: controller.signal,
+      });
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`Telegram API failed (${res.status}): ${body}`);
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Telegram API failed (${res.status}): ${body}`);
+      }
+
+      const data = (await res.json()) as TelegramResponse;
+
+      if (!data.ok) {
+        throw new Error(`Telegram API error: ${data.description ?? 'unknown error'}`);
+      }
+
+      const postId = String(data.result!.message_id);
+      log.info('Posted to Telegram', { postId, chatId: this.chatId });
+      return { postId };
+    } finally {
+      clearTimeout(timer);
     }
-
-    const data = (await res.json()) as TelegramResponse;
-
-    if (!data.ok) {
-      throw new Error(`Telegram API error: ${data.description ?? 'unknown error'}`);
-    }
-
-    const postId = String(data.result!.message_id);
-    log.info('Posted to Telegram', { postId, chatId: this.chatId });
-    return { postId };
   }
 }

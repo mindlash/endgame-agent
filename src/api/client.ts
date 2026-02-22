@@ -2,36 +2,63 @@
  * EndGame API client.
  *
  * All endpoints require Origin + Referer headers.
- * Uses the same public API as the website — no special access.
+ * Uses the same public API as the website -- no special access.
+ *
+ * IMPORTANT: API base is https://api.endgame.cash (not https://endgame.cash).
+ * Response formats vary by endpoint -- some return raw JSON, others wrap in {success, data}.
  */
 
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('api');
 
-const BASE_URL = 'https://endgame.cash';
+const DEFAULT_BASE_URL = 'https://api.endgame.cash';
 const REQUIRED_HEADERS = {
   'Accept': 'application/json',
-  'Origin': BASE_URL,
-  'Referer': `${BASE_URL}/`,
+  'Origin': 'https://endgame.cash',
+  'Referer': 'https://endgame.cash/',
 };
 
-export interface ApiResponse<T = unknown> {
-  success: boolean;
-  data: T;
-  timestamp: string;
+// ── Response types ───────────────────────────────────────────────────
+
+/** Game status from /api/game/status -- NOT wrapped in {success, data}. */
+export interface GameStatusResponse {
+  round_id: number;
+  current_round: number;
+  winner: string;
+  prize_amount: string;
+  claim_deadline: number;
+  status: string;
+  time_remaining_seconds: number;
+  vault_balance: string;
 }
+
+/** Claim verification result from /api/claims/verify. */
+export interface ClaimVerifyResult {
+  roundId: number;
+  claimable: boolean;
+  reason?: string;
+}
+
+export interface ClaimVerifyResponse {
+  results: ClaimVerifyResult[];
+}
+
+// ── Client ───────────────────────────────────────────────────────────
 
 export class EndGameApi {
   private baseUrl: string;
   private timeoutMs: number;
 
-  constructor(baseUrl = BASE_URL, timeoutMs = 15_000) {
+  constructor(baseUrl = DEFAULT_BASE_URL, timeoutMs = 15_000) {
     this.baseUrl = baseUrl;
     this.timeoutMs = timeoutMs;
   }
 
-  private async get<T>(path: string): Promise<T> {
+  /**
+   * Raw GET -- returns the parsed JSON body as-is (no unwrapping).
+   */
+  private async getRaw<T>(path: string): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -46,11 +73,22 @@ export class EndGameApi {
         throw new Error(`API ${res.status}: ${path}`);
       }
 
-      const body = (await res.json()) as ApiResponse<T>;
-      return body.data ?? (body as unknown as T);
+      return (await res.json()) as T;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * GET for endpoints that wrap responses in {success, data, ...}.
+   * Falls back to returning the body as-is if no .data wrapper exists.
+   */
+  private async get<T>(path: string): Promise<T> {
+    const body = await this.getRaw<Record<string, unknown>>(path);
+    if ('data' in body && body.data !== undefined) {
+      return body.data as T;
+    }
+    return body as unknown as T;
   }
 
   private async post<T>(path: string, payload: unknown): Promise<T> {
@@ -70,8 +108,7 @@ export class EndGameApi {
         throw new Error(`API ${res.status}: ${path}`);
       }
 
-      const body = (await res.json()) as ApiResponse<T>;
-      return body.data ?? (body as unknown as T);
+      return (await res.json()) as T;
     } finally {
       clearTimeout(timer);
     }
@@ -79,18 +116,35 @@ export class EndGameApi {
 
   // ── Round monitoring ──────────────────────────────────────────────
 
-  async getCurrentRound() {
-    return this.get<{
-      round_id: string;
-      status: string;
-      winner_wallet?: string;
-      claim_deadline?: string;
-      prize_amount?: number;
-    }>('/api/game/current-round');
+  /**
+   * Get current game status. Returns the raw response (not wrapped).
+   * Fields: round_id (number), winner (string), prize_amount (string),
+   *         claim_deadline (unix timestamp number), status (string).
+   */
+  async getGameStatus(): Promise<GameStatusResponse> {
+    return this.getRaw<GameStatusResponse>('/api/game/status');
   }
 
-  async getGameStatus() {
-    return this.get<Record<string, unknown>>('/api/game/status');
+  /**
+   * Alias for getGameStatus -- this is the primary round-checking method.
+   * The old /api/game/current-round endpoint is NOT used; /api/game/status
+   * contains all the information needed for monitoring.
+   */
+  async getCurrentRound(): Promise<GameStatusResponse> {
+    return this.getGameStatus();
+  }
+
+  // ── Claim verification ────────────────────────────────────────────
+
+  /**
+   * Verify whether rounds are claimable before building on-chain transactions.
+   * POST to /api/claims/verify with {roundIds, walletAddress}.
+   */
+  async verifyClaims(roundIds: number[], walletAddress: string): Promise<ClaimVerifyResponse> {
+    return this.post<ClaimVerifyResponse>('/api/claims/verify', {
+      roundIds,
+      walletAddress,
+    });
   }
 
   // ── Vault & price ─────────────────────────────────────────────────
@@ -151,16 +205,6 @@ export class EndGameApi {
 
   async getActiveChallenges() {
     return this.get<Array<Record<string, unknown>>>('/api/challenges/active');
-  }
-
-  // ── Claiming ─────────────────────────────────────────────────────
-
-  async submitClaim(payload: {
-    round_id: string;
-    wallet: string;
-    signature: string;
-  }): Promise<{ tx_signature: string }> {
-    return this.post<{ tx_signature: string }>('/api/game/claim', payload);
   }
 
   // ── Game pulse ────────────────────────────────────────────────────

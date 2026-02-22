@@ -61,6 +61,8 @@ The setup wizard needs to handle this gracefully: Twitter requires the most setu
 
 ## EndGame API Reference
 
+**API Base URL:** `https://api.endgame.cash` (NOT `https://endgame.cash`)
+
 **CRITICAL:** Every request must include these headers or you get 500 errors:
 ```
 Origin: https://endgame.cash
@@ -68,9 +70,9 @@ Referer: https://endgame.cash/
 ```
 
 ### Core Endpoints (for claiming)
-- `GET /api/game/current-round` — round status, winner wallet, claim deadline
-- `GET /api/game/status` — overall game state, timing
-- `POST /api/game/claim` — submit claim transaction (requires signed message)
+- `GET /api/game/status` — round status, winner, prize_amount (string), claim_deadline (unix ts), vault_balance
+- `POST /api/claims/verify` — verify round claimability: `{roundIds: number[], walletAddress: string}`
+- Claiming is done ON-CHAIN via Solana transaction (program ID: `pjMUjMjHTHot5bYrBu9qd4cRaNKdK1eTR8iVYouQzDo`)
 
 ### Content Context Endpoints (for marketing)
 - `GET /api/vault/projection` — endgame countdown (days_until_target, confidence)
@@ -87,7 +89,7 @@ Referer: https://endgame.cash/
 - `GET /api/weight-breakdown/{wallet}` — full multiplier chain
 
 ### API Behaviors
-- All responses wrapped in `{ success: true, data: {...}, timestamp: "..." }`
+- Response formats vary: /api/game/status returns raw JSON; /api/price returns {success, price, ...}; some return {success, data}
 - Some endpoints need `?wallet=` query param (donor-boost, potions, bundles, premium)
 - Rate limiting exists but is generous for normal polling (30s intervals are fine)
 - No authentication required — same public API the website uses
@@ -163,21 +165,28 @@ Done:
 - [x] Project scaffolding (package.json, tsconfig, directory structure)
 - [x] Architecture proposal (docs/ARCHITECTURE.md)
 - [x] Bounty submission document (docs/SUBMISSION.md)
-- [x] API client with all known endpoints
+- [x] API client with all known endpoints (api.endgame.cash, correct response formats)
 - [x] Argon2id keystore (encrypt/decrypt)
 - [x] Signing subprocess (IPC protocol)
-- [x] Round monitor (adaptive polling, retry logic)
-- [x] Marketing engine skeleton (personality, safety filter, dedup)
+- [x] Round monitor (adaptive polling, retry logic, claimed-round tracking, deadline validation)
+- [x] Marketing engine (personality, safety filter, dedup, updated GAME_KNOWLEDGE)
 - [x] Docker deployment files
+- [x] Claim executor (on-chain Solana transaction, PDA derivation, Token-2022, 12-retry submit)
+- [x] Twitter/X channel adapter (OAuth 1.0a HMAC-SHA1, v2 API, 30s timeout)
+- [x] Discord channel adapter (webhook, rate limit handling, 30s timeout)
+- [x] Telegram channel adapter (Bot API, 30s timeout)
+- [x] LLM integration (Claude + OpenAI via raw fetch, no SDK deps)
+- [x] Marketing scheduler (parallel posting, referral links, persistent post history, signal-aware sleep)
+- [x] Setup wizard (interactive CLI, key encryption, wallet derivation)
+- [x] npx entry point (endgame-agent / endgame-agent setup)
+- [x] Full test suite (118 tests across 6 files, all passing)
+- [x] npm install + TypeScript compiles clean (strict mode)
+- [x] README.md (comprehensive documentation)
+- [x] Signer crash recovery (auto-restart on exit)
+- [x] Personality persistence (saved to disk when generated)
+- [x] unhandledRejection handler (marketing crashes don't kill claim engine)
 
 TODO:
-- [ ] Claim executor (build + submit Solana transaction)
-- [ ] Twitter/X channel adapter (OAuth 2.0, v2 API)
-- [ ] Discord channel adapter (webhook)
-- [ ] Telegram channel adapter (Bot API)
-- [ ] LLM integration (Claude/OpenAI content generation)
-- [ ] Setup wizard (interactive CLI)
 - [ ] Personality evolution (engagement-based trait adjustment)
-- [ ] Full test suite (unit + integration)
-- [ ] npm install + verify TypeScript compiles
-- [ ] End-to-end test against live API
+- [ ] End-to-end test against live API (requires funded wallet)
+- [ ] Security audit by third party

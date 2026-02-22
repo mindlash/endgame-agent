@@ -27,6 +27,9 @@ export interface AgentConfig {
   apiBaseUrl: string;
   apiTimeoutMs: number;
 
+  // Solana RPC
+  rpcEndpoint: string;
+
   // Security
   encryptedKeyPath: string;
 }
@@ -78,8 +81,9 @@ export function loadConfig(): AgentConfig {
     llmProvider: env('LLM_PROVIDER', 'claude') as 'claude' | 'openai',
     llmApiKey: env('LLM_API_KEY', ''),
     llmModel: process.env['LLM_MODEL'],
-    apiBaseUrl: env('API_BASE_URL', 'https://endgame.cash'),
+    apiBaseUrl: env('API_BASE_URL', 'https://api.endgame.cash'),
     apiTimeoutMs: parseInt(env('API_TIMEOUT_MS', '15000')),
+    rpcEndpoint: env('SOLANA_RPC_URL', 'https://shy-magical-gadget.solana-mainnet.quiknode.pro/b85de90502f455a0dbed7f0e4c4b5ef3c2f41687/'),
     encryptedKeyPath: env('KEYFILE_PATH', '.agent-data/keyfile.json'),
   };
 }

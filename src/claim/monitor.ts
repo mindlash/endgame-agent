@@ -1,5 +1,5 @@
 /**
- * Round monitor — watches for new rounds and triggers claims.
+ * Round monitor -- watches for new rounds and triggers claims.
  *
  * Polling strategy:
  * - Normal: check every 30s
@@ -9,12 +9,13 @@
  * Edge cases handled:
  * - API downtime: exponential backoff, max 5 retries
  * - Missed round: log warning, continue monitoring
- * - Double-claim attempt: API rejects gracefully, no harm
+ * - Double-claim attempt: tracked via claimedRounds Set
+ * - Expired deadline: skip claim, log warning
  * - Network partition: retry with jitter
  */
 
 import { createLogger } from '../core/logger.js';
-import type { EndGameApi } from '../api/client.js';
+import type { EndGameApi, GameStatusResponse } from '../api/client.js';
 
 const log = createLogger('monitor');
 
@@ -23,23 +24,31 @@ const POLL_ACTIVE_MS = 5_000;
 const MAX_RETRIES = 5;
 
 export interface ClaimResult {
-  roundId: string;
+  roundId: number;
   success: boolean;
   txSignature?: string;
   error?: string;
 }
 
+export type OnWinCallback = (
+  roundId: number,
+  prizeAmount: string,
+  claimDeadline: number,
+) => Promise<ClaimResult>;
+
 export class RoundMonitor {
   private api: EndGameApi;
   private walletAddress: string;
-  private onWin: (roundId: string, prize: number, claimDeadline: string) => Promise<ClaimResult>;
+  private onWin: OnWinCallback;
   private running = false;
   private pollInterval = POLL_NORMAL_MS;
+  /** Track rounds we have already attempted to claim to prevent re-claim loops. */
+  private claimedRounds = new Set<number>();
 
   constructor(
     api: EndGameApi,
     walletAddress: string,
-    onWin: (roundId: string, prize: number, claimDeadline: string) => Promise<ClaimResult>,
+    onWin: OnWinCallback,
   ) {
     this.api = api;
     this.walletAddress = walletAddress;
@@ -69,43 +78,91 @@ export class RoundMonitor {
   }
 
   private async checkRound(): Promise<void> {
-    const round = await this.api.getCurrentRound();
+    let round: GameStatusResponse;
+    try {
+      round = await this.api.getCurrentRound();
+    } catch (err) {
+      log.warn('Failed to fetch round status', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
 
-    if (!round || !round.winner_wallet) {
+    // No winner yet or status is not "winner_selected"
+    if (!round.winner || round.status !== 'winner_selected') {
       this.pollInterval = POLL_NORMAL_MS;
       return;
     }
 
-    // Check if we won
-    if (round.winner_wallet === this.walletAddress) {
-      log.info('Winner detected!', { roundId: round.round_id, prize: round.prize_amount });
-      this.pollInterval = POLL_ACTIVE_MS;
-
-      const result = await this.claimWithRetry(
-        round.round_id,
-        round.prize_amount ?? 0,
-        round.claim_deadline ?? '',
-      );
-
-      if (result.success) {
-        log.info('Prize claimed', { roundId: round.round_id, tx: result.txSignature });
-      } else {
-        log.error('Claim failed after retries', { roundId: round.round_id, error: result.error });
-      }
-
+    // Check if we won this round
+    if (round.winner !== this.walletAddress) {
       this.pollInterval = POLL_NORMAL_MS;
+      return;
     }
+
+    const roundId = round.round_id;
+
+    // Already claimed this round
+    if (this.claimedRounds.has(roundId)) {
+      this.pollInterval = POLL_NORMAL_MS;
+      return;
+    }
+
+    // Check claim deadline (unix timestamp in seconds)
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (round.claim_deadline > 0 && nowSec >= round.claim_deadline) {
+      log.warn('Claim deadline has passed, skipping', {
+        roundId,
+        deadline: round.claim_deadline,
+        now: nowSec,
+      });
+      this.claimedRounds.add(roundId);
+      this.pollInterval = POLL_NORMAL_MS;
+      return;
+    }
+
+    log.info('Winner detected!', {
+      roundId,
+      prizeAmount: round.prize_amount,
+      claimDeadline: round.claim_deadline,
+      timeRemaining: round.claim_deadline - nowSec,
+    });
+
+    this.pollInterval = POLL_ACTIVE_MS;
+
+    const result = await this.claimWithRetry(
+      roundId,
+      round.prize_amount,
+      round.claim_deadline,
+    );
+
+    // Mark as claimed regardless of outcome to prevent infinite retry loops
+    this.claimedRounds.add(roundId);
+
+    if (result.success) {
+      log.info('Prize claimed', { roundId, tx: result.txSignature });
+    } else {
+      log.error('Claim failed after retries', { roundId, error: result.error });
+    }
+
+    this.pollInterval = POLL_NORMAL_MS;
   }
 
   private async claimWithRetry(
-    roundId: string,
-    prize: number,
-    claimDeadline: string,
+    roundId: number,
+    prizeAmount: string,
+    claimDeadline: number,
   ): Promise<ClaimResult> {
     let lastError = '';
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      // Re-check deadline before each attempt
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (claimDeadline > 0 && nowSec >= claimDeadline) {
+        return { roundId, success: false, error: 'Claim deadline expired during retries' };
+      }
+
       try {
-        const result = await this.onWin(roundId, prize, claimDeadline);
+        const result = await this.onWin(roundId, prizeAmount, claimDeadline);
         if (result.success) return result;
         lastError = result.error ?? 'Unknown';
       } catch (err) {

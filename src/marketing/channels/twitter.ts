@@ -12,6 +12,7 @@ const log = createLogger('twitter');
 
 const TWEET_MAX_LENGTH = 280;
 const TWEETS_ENDPOINT = 'https://api.twitter.com/2/tweets';
+const FETCH_TIMEOUT_MS = 30_000;
 
 export interface TwitterConfig {
   apiKey: string;
@@ -114,38 +115,45 @@ export class TwitterChannel implements ChannelAdapter {
 
     const authorization = buildOAuthHeader('POST', TWEETS_ENDPOINT, this.config);
 
-    const res = await fetch(TWEETS_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: authorization,
-      },
-      body: JSON.stringify({ text }),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(TWEETS_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authorization,
+        },
+        body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
 
-    if (res.status === 429) {
-      const resetHeader = res.headers.get('x-rate-limit-reset');
-      log.warn('Twitter rate limited', { resetAt: resetHeader });
-      throw new Error(`Twitter rate limited — resets at ${resetHeader ?? 'unknown'}`);
+      if (res.status === 429) {
+        const resetHeader = res.headers.get('x-rate-limit-reset');
+        log.warn('Twitter rate limited', { resetAt: resetHeader });
+        throw new Error(`Twitter rate limited — resets at ${resetHeader ?? 'unknown'}`);
+      }
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Twitter API failed (${res.status}): ${body}`);
+      }
+
+      const data = (await res.json()) as TweetResponse;
+
+      if (data.errors?.length) {
+        const msg = data.errors.map((e) => e.message).join('; ');
+        throw new Error(`Twitter API errors: ${msg}`);
+      }
+
+      if (!data.data?.id) {
+        throw new Error('Twitter API returned no tweet ID');
+      }
+
+      log.info('Posted to Twitter', { postId: data.data.id });
+      return { postId: data.data.id };
+    } finally {
+      clearTimeout(timer);
     }
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new Error(`Twitter API failed (${res.status}): ${body}`);
-    }
-
-    const data = (await res.json()) as TweetResponse;
-
-    if (data.errors?.length) {
-      const msg = data.errors.map((e) => e.message).join('; ');
-      throw new Error(`Twitter API errors: ${msg}`);
-    }
-
-    if (!data.data?.id) {
-      throw new Error('Twitter API returned no tweet ID');
-    }
-
-    log.info('Posted to Twitter', { postId: data.data.id });
-    return { postId: data.data.id };
   }
 }

@@ -70,6 +70,9 @@ export async function encryptKey(
   // Encrypt with NaCl secretbox
   const ciphertext = nacl.secretbox(privateKey, nonce, derivedKey);
 
+  // Wipe derived key from memory
+  if (derivedKey instanceof Buffer) derivedKey.fill(0);
+
   log.info('Key encrypted successfully');
 
   return {
@@ -96,6 +99,11 @@ export async function decryptKey(
 ): Promise<Uint8Array> {
   const argon2 = await import('argon2');
 
+  // Validate Argon2 parameters meet minimum security thresholds (prevent downgrade attack)
+  if (keyfile.argon2.timeCost < 2 || keyfile.argon2.memoryCost < 16384 || keyfile.argon2.parallelism < 1) {
+    throw new Error('Keyfile Argon2 parameters below minimum security threshold');
+  }
+
   const salt = Buffer.from(keyfile.salt, 'base64');
   const nonce = Buffer.from(keyfile.nonce, 'base64');
   const ciphertext = Buffer.from(keyfile.ciphertext, 'base64');
@@ -111,6 +119,10 @@ export async function decryptKey(
   });
 
   const plaintext = nacl.secretbox.open(ciphertext, nonce, derivedKey);
+
+  // Wipe derived key from memory immediately
+  if (derivedKey instanceof Buffer) derivedKey.fill(0);
+
   if (!plaintext) {
     throw new Error('Decryption failed — wrong password or corrupted keyfile');
   }

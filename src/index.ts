@@ -21,7 +21,7 @@
 
 import 'dotenv/config';
 import { fork, type ChildProcess } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from './core/logger.js';
@@ -42,7 +42,21 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function spawnSigner(): ChildProcess {
   const signerPath = join(__dirname, 'security', 'signer.js');
-  return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  // Use Node.js permission model to restrict signer subprocess:
+  // - No network access (no --allow-net)
+  // - Read-only filesystem access for keyfile
+  // Falls back to standard fork if permission model is unavailable (Node < 20.0)
+  const execArgv = [
+    '--experimental-permission',
+    '--allow-fs-read=*',
+    // No --allow-fs-write, no --allow-net, no --allow-child-process
+  ];
+  try {
+    return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], execArgv });
+  } catch {
+    log.warn('Permission model unavailable, spawning signer without network restriction');
+    return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  }
 }
 
 function waitForMessage(proc: ChildProcess, expectedType: string, timeoutMs = 15_000): Promise<void> {
@@ -89,7 +103,10 @@ function loadOrCreatePersonality(): Personality {
     return JSON.parse(readFileSync(path, 'utf-8')) as Personality;
   }
   log.info('No personality found, generating new seed');
-  return generatePersonalitySeed();
+  const personality = generatePersonalitySeed();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(personality, null, 2) + '\n');
+  return personality;
 }
 
 // ── Main ───────────────────────────────────────────────────────────
@@ -117,10 +134,35 @@ async function main(): Promise<void> {
     await waitForMessage(signerProc, 'unlocked');
     log.info('Signer unlocked');
 
-    const executor = new ClaimExecutor(api, config.walletAddress, signerProc);
-    monitor = new RoundMonitor(api, config.walletAddress, (roundId, prize, deadline) =>
-      executor.claim(roundId, prize, deadline),
+    const executor = new ClaimExecutor(api, config.walletAddress, signerProc, config.rpcEndpoint);
+    monitor = new RoundMonitor(api, config.walletAddress, (roundId, prizeAmount, claimDeadline) =>
+      executor.claim(roundId, prizeAmount, claimDeadline),
     );
+
+    // Signer crash recovery
+    signerProc.on('exit', (code) => {
+      if (code !== 0 && code !== null) {
+        log.error('Signer process crashed', { code });
+        // Attempt restart after 5 seconds
+        setTimeout(async () => {
+          try {
+            signerProc = spawnSigner();
+            await waitForMessage(signerProc, 'ready');
+            const restartPassword = process.env['KEYFILE_PASSWORD'];
+            if (restartPassword) {
+              signerProc.send({ type: 'unlock', password: restartPassword, keyfilePath: config.encryptedKeyPath });
+              await waitForMessage(signerProc, 'unlocked');
+              log.info('Signer restarted successfully');
+              // Update executor's reference
+              executor.updateSigner(signerProc);
+            }
+          } catch (err) {
+            log.error('Signer restart failed', { error: err instanceof Error ? err.message : String(err) });
+          }
+        }, 5000);
+      }
+    });
+
     // Run monitor in background (async loop, never awaited here)
     monitor.start().catch(err =>
       log.error('Monitor crashed', { error: err instanceof Error ? err.message : String(err) }),
@@ -164,12 +206,24 @@ function shutdown(signal: string): void {
   log.info(`Shutting down (${signal})`);
   monitor?.stop();
   scheduler?.stop();
-  if (signerProc) { signerProc.kill(); signerProc = null; }
-  process.exit(0);
+  // Wipe private key before killing signer
+  if (signerProc) {
+    try { signerProc.send({ type: 'lock' }); } catch { /* already dead */ }
+    setTimeout(() => {
+      if (signerProc) { signerProc.kill(); signerProc = null; }
+      process.exit(0);
+    }, 500);
+  } else {
+    process.exit(0);
+  }
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled rejection', { error: reason instanceof Error ? reason.message : String(reason) });
+});
 
 main().catch(err => {
   log.error('Fatal error', { error: err instanceof Error ? err.message : String(err) });

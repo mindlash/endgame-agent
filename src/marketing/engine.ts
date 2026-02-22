@@ -44,14 +44,18 @@ EndGame is a Solana-based lottery and combat game (Season 1).
 
 Key facts for content:
 - Hold $END tokens to auto-enter lottery draws every ~1-2 hours
-- Winner gets 1% of the vault balance each round, provably fair via VRF
-- Combat: 1v1 PvP challenges with 24-hour resolution period
-- Diamond Hands: holding tokens grows your multiplier over time (Paper to Legend)
-- Potions: Power of 4/8 lock you into smaller draw pools (better odds)
-- Store: credits buy powerups, mystery boxes, and potions
-- Donor tiers: permanent multiplier boosts (Bronze through Champion)
-- The Endgame: vault fills over time, triggers a massive distribution event
-- Unclaimed prizes roll over, making jackpots grow
+- Winner gets 0.01%-1% of the vault balance each round (scales with vault size), provably fair via VRF
+- Winners have a 4-HOUR window to claim their prize — unclaimed prizes roll over
+- ~31% of prizes go unclaimed, making future jackpots bigger
+- Minimum eligibility: hold 0.10% of total supply (~1M $END tokens)
+- Weight formula: Balance x HoldingsBoost x Donor x DiamondHands x CombatMultiplier + Referrals
+- Combat: 1v1 PvP challenges with 24-hour VRF resolution, betting pools on outcomes
+- Diamond Hands tiers: Paper(1.0x) → Rookie(1.2x) → Holder(1.4x) → Veteran(1.6x) → Diamond(1.8x) → Legend(2.0x)
+- Potions: Power of 4 (4-player pool, 25% chance) / Power of 8 (8-player, 12.5%) — lottery only
+- Store: credits ($1=1 credit) buy powerups, mystery boxes, and potions
+- Donor tiers: permanent multiplier (Bronze $10/1.1x through Champion $1000+/2.0x)
+- The Endgame: vault fills toward threshold, triggers a massive distribution event
+- 1% on-chain transfer fee on all $END token transfers
 - Referrals: 2-level system that adds to lottery weight
 - Season 1 is LIVE on Solana mainnet
 `.trim();
@@ -76,7 +80,7 @@ const BLOCKED_PATTERNS = [
   /\b(guaranteed|sure.?thing|free.?money|can't.?lose)/i,
   /\b(financial.?advice|investment.?advice|NFA)/i,
   /\b(0x[a-fA-F0-9]{40})/,                    // ETH addresses
-  /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/,         // Solana addresses (base58)
+  /(?<![a-zA-Z])[1-9A-HJ-NP-Za-km-z]{40,44}(?![a-zA-Z])/,  // Solana addresses (base58, 40-44 chars)
 ];
 
 export function isSafe(text: string): { safe: boolean; reason?: string } {

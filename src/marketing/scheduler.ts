@@ -6,6 +6,8 @@
  * Designed to run alongside the claim engine without crashing.
  */
 
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { createLogger } from '../core/logger.js';
 import { EndGameApi } from '../api/client.js';
 import { isSafe, isDuplicate } from './engine.js';
@@ -18,10 +20,7 @@ const log = createLogger('scheduler');
 const MAX_RETRIES = 3;
 const HISTORY_LIMIT = 50;
 const JITTER_MS = 15 * 60 * 1000; // +/- 15 minutes
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+const HISTORY_FILE = join(process.cwd(), '.agent-data', 'post-history.json');
 
 export class MarketingScheduler {
   private api: EndGameApi;
@@ -48,6 +47,7 @@ export class MarketingScheduler {
     this.personality = personality;
     this.referralCode = referralCode;
     this.postsPerDay = postsPerDay;
+    this.loadHistory();
   }
 
   async start(): Promise<void> {
@@ -69,7 +69,7 @@ export class MarketingScheduler {
       const delay = Math.max(intervalMs + jitter, 60_000); // at least 1 minute
       log.debug('Next post scheduled', { delayMs: Math.round(delay) });
 
-      await sleep(delay);
+      await this.sleep(delay);
     }
   }
 
@@ -79,26 +79,41 @@ export class MarketingScheduler {
     log.info('Scheduler stopped');
   }
 
+  // ── Signal-aware sleep ────────────────────────────────────────────
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      const onAbort = () => { clearTimeout(timer); resolve(); };
+      this.abortController?.signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
   // ── Core posting cycle ────────────────────────────────────────────
 
   private async postCycle(): Promise<void> {
     const gameContext = await this.fetchGameContext();
+    const referralLink = this.referralCode ? `https://endgame.cash?ref=${this.referralCode}` : undefined;
 
-    for (const channel of this.channels) {
-      const channelName = channel.name as 'twitter' | 'discord' | 'telegram';
+    const results = await Promise.allSettled(
+      this.channels.map(async (channel) => {
+        const channelName = channel.name as 'twitter' | 'discord' | 'telegram';
 
-      try {
         const text = await this.generateSafeContent(channelName, gameContext);
         if (!text) {
           log.warn('All retries exhausted, skipping slot', { channel: channelName });
-          continue;
+          return;
         }
 
-        await channel.post(text);
+        await channel.post(text, referralLink);
         this.addToHistory(text);
         log.info('Posted successfully', { channel: channelName, length: text.length });
-      } catch (err) {
-        log.error('Channel post failed', { channel: channelName, error: String(err) });
+      }),
+    );
+
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        log.error('Channel post failed', { error: String(result.reason) });
       }
     }
   }
@@ -147,6 +162,9 @@ export class MarketingScheduler {
       ['price', () => this.api.getPrice()],
       ['stats', () => this.api.getStatsDigest()],
       ['vault', () => this.api.getVaultProjection()],
+      ['gameStatus', () => this.api.getGameStatus()],
+      ['activeChallenges', () => this.api.getActiveChallenges()],
+      ['rankings', () => this.api.getRankings()],
     ];
 
     await Promise.all(
@@ -169,6 +187,30 @@ export class MarketingScheduler {
     this.postHistory.push(text);
     if (this.postHistory.length > HISTORY_LIMIT) {
       this.postHistory = this.postHistory.slice(-HISTORY_LIMIT);
+    }
+    this.saveHistory();
+  }
+
+  private loadHistory(): void {
+    try {
+      if (existsSync(HISTORY_FILE)) {
+        const data = JSON.parse(readFileSync(HISTORY_FILE, 'utf-8'));
+        if (Array.isArray(data)) {
+          this.postHistory = data.slice(-HISTORY_LIMIT);
+          log.info('Loaded post history from disk', { count: this.postHistory.length });
+        }
+      }
+    } catch (err) {
+      log.warn('Failed to load post history', { error: String(err) });
+    }
+  }
+
+  private saveHistory(): void {
+    try {
+      mkdirSync(dirname(HISTORY_FILE), { recursive: true });
+      writeFileSync(HISTORY_FILE, JSON.stringify(this.postHistory, null, 2) + '\n');
+    } catch (err) {
+      log.warn('Failed to save post history', { error: String(err) });
     }
   }
 }
