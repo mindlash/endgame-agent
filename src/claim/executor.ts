@@ -28,6 +28,7 @@ import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { createLogger } from '../core/logger.js';
+import { resolveDataDir } from '../core/config.js';
 import type { EndGameApi } from '../api/client.js';
 import type { ClaimResult } from './monitor.js';
 
@@ -36,7 +37,7 @@ const log = createLogger('claim');
 // ── Constants ──────────────────────────────────────────────────────
 
 const SIGN_TIMEOUT_MS = 10_000;
-const CLAIMS_FILE = join(process.cwd(), '.agent-data', 'claims.json');
+const CLAIMS_FILE = join(resolveDataDir(), 'claims.json');
 
 /** The EndGame program on Solana mainnet. */
 const PROGRAM_ID = new PublicKey('pjMUjMjHTHot5bYrBu9qd4cRaNKdK1eTR8iVYouQzDo');

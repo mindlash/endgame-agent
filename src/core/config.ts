@@ -3,6 +3,28 @@
  * All secrets are read once at startup and never logged.
  */
 
+import { join } from 'node:path';
+
+// ── AGENT_HOME resolution ────────────────────────────────────────
+
+/**
+ * Root directory for all agent files when installed as a service.
+ * Falls back to process.cwd() for local dev (preserves existing behavior).
+ */
+export function resolveHome(): string {
+  return process.env['AGENT_HOME'] ?? process.cwd();
+}
+
+export function resolveDataDir(): string {
+  return join(resolveHome(), 'data');
+}
+
+export function resolveConfigDir(): string {
+  return join(resolveHome(), 'config');
+}
+
+// ── Interfaces ───────────────────────────────────────────────────
+
 export interface AgentConfig {
   // Wallet
   walletAddress: string;
@@ -84,7 +106,7 @@ export function loadConfig(): AgentConfig {
     apiBaseUrl: env('API_BASE_URL', 'https://api.endgame.cash'),
     apiTimeoutMs: parseInt(env('API_TIMEOUT_MS', '15000')),
     rpcEndpoint: env('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
-    encryptedKeyPath: env('KEYFILE_PATH', '.agent-data/keyfile.json'),
+    encryptedKeyPath: env('KEYFILE_PATH', join(resolveDataDir(), 'keyfile.json')),
   };
 }
 

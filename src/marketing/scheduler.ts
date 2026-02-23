@@ -9,6 +9,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createLogger } from '../core/logger.js';
+import { resolveDataDir } from '../core/config.js';
 import { EndGameApi } from '../api/client.js';
 import { isSafe, isDuplicate } from './engine.js';
 import { generateContent } from './llm.js';
@@ -22,7 +23,7 @@ const log = createLogger('scheduler');
 const MAX_RETRIES = 3;
 const HISTORY_LIMIT = 50;
 const JITTER_MS = 15 * 60 * 1000; // +/- 15 minutes
-const HISTORY_FILE = join(process.cwd(), '.agent-data', 'post-history.json');
+const HISTORY_FILE = join(resolveDataDir(), 'post-history.json');
 const EVOLUTION_INTERVAL = 20;
 
 export class MarketingScheduler {

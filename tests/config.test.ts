@@ -2,7 +2,8 @@
  * Tests for configuration loading from environment variables.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadConfig, loadChannelCredentials } from '../src/core/config.js';
+import { join } from 'node:path';
+import { loadConfig, loadChannelCredentials, resolveHome, resolveDataDir, resolveConfigDir } from '../src/core/config.js';
 
 // Save original env to restore after each test
 let originalEnv: NodeJS.ProcessEnv;
@@ -88,7 +89,7 @@ describe('loadConfig', () => {
     expect(config.llmModel).toBeUndefined();
     expect(config.apiBaseUrl).toBe('https://api.endgame.cash');
     expect(config.apiTimeoutMs).toBe(15000);
-    expect(config.encryptedKeyPath).toBe('.agent-data/keyfile.json');
+    expect(config.encryptedKeyPath).toBe(join(process.cwd(), 'data', 'keyfile.json'));
   });
 
   it('throws on missing WALLET_ADDRESS', () => {

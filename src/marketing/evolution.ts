@@ -9,13 +9,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createLogger } from '../core/logger.js';
+import { resolveDataDir } from '../core/config.js';
 import { callLlmRaw } from './llm.js';
 import type { LlmConfig } from './llm.js';
 import type { Personality } from './engine.js';
 
 const log = createLogger('evolution');
 
-const PERSONALITY_FILE = join(process.cwd(), '.agent-data', 'personality.json');
+const PERSONALITY_FILE = join(resolveDataDir(), 'personality.json');
 
 export interface EvolutionStats {
   totalGenerated: number;

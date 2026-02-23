@@ -19,13 +19,13 @@
  * └──────────────────────────────────────────┘
  */
 
-import 'dotenv/config';
+import { config as dotenvConfig } from 'dotenv';
 import { fork, type ChildProcess } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from './core/logger.js';
-import { loadConfig, loadChannelCredentials, type ChannelCredentials, type AgentConfig } from './core/config.js';
+import { loadConfig, loadChannelCredentials, resolveDataDir, resolveConfigDir, type ChannelCredentials, type AgentConfig } from './core/config.js';
 import { EndGameApi } from './api/client.js';
 import { RoundMonitor } from './claim/monitor.js';
 import { ClaimExecutor } from './claim/executor.js';
@@ -35,6 +35,11 @@ import { DiscordChannel } from './marketing/channels/discord.js';
 import { TelegramChannel } from './marketing/channels/telegram.js';
 import { TwitterChannel } from './marketing/channels/twitter.js';
 import { generatePersonalitySeed, type Personality, type ChannelAdapter } from './marketing/engine.js';
+import { retrievePassword } from './cli/credentials.js';
+
+// Load .env from config dir (installed) or cwd (dev)
+dotenvConfig({ path: join(resolveConfigDir(), '.env') });
+dotenvConfig(); // fallback: cwd/.env (no-op if already loaded)
 
 const log = createLogger('main');
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -43,7 +48,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function spawnSigner(keyfilePath: string): ChildProcess {
   const signerPath = join(__dirname, 'security', 'signer.js');
-  const dataDir = join(process.cwd(), '.agent-data');
+  const dataDir = resolveDataDir();
   const execArgv = [
     '--experimental-permission',
     `--allow-fs-read=${signerPath},${dataDir},${keyfilePath}`,
@@ -95,7 +100,7 @@ function buildChannels(
 // ── Personality loader ─────────────────────────────────────────────
 
 function loadOrCreatePersonality(): Personality {
-  const path = join(process.cwd(), '.agent-data', 'personality.json');
+  const path = join(resolveDataDir(), 'personality.json');
   if (existsSync(path)) {
     return JSON.parse(readFileSync(path, 'utf-8')) as Personality;
   }
@@ -132,8 +137,16 @@ async function main(): Promise<void> {
     signerProc = spawnSigner(config.encryptedKeyPath);
     await waitForMessage(signerProc, 'ready');
 
-    const password = process.env['KEYFILE_PASSWORD'];
-    if (!password) throw new Error('KEYFILE_PASSWORD env var required for claim mode');
+    // Try credential store first, then fall back to env var
+    let password = process.env['KEYFILE_PASSWORD'];
+    if (!password) {
+      const stored = retrievePassword();
+      if (stored) {
+        password = stored;
+        log.info('Password retrieved from system credential store');
+      }
+    }
+    if (!password) throw new Error('KEYFILE_PASSWORD env var required for claim mode (or store in system keychain via setup)');
     delete process.env['KEYFILE_PASSWORD'];
 
     signerProc.send({ type: 'unlock', password, keyfilePath: config.encryptedKeyPath });
