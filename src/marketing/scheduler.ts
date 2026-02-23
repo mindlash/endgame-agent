@@ -12,8 +12,10 @@ import { createLogger } from '../core/logger.js';
 import { EndGameApi } from '../api/client.js';
 import { isSafe, isDuplicate } from './engine.js';
 import { generateContent } from './llm.js';
+import { evolvePersonality, savePersonality } from './evolution.js';
 import type { LlmConfig } from './llm.js';
 import type { Personality, ChannelAdapter } from './engine.js';
+import type { EvolutionStats } from './evolution.js';
 
 const log = createLogger('scheduler');
 
@@ -21,6 +23,7 @@ const MAX_RETRIES = 3;
 const HISTORY_LIMIT = 50;
 const JITTER_MS = 15 * 60 * 1000; // +/- 15 minutes
 const HISTORY_FILE = join(process.cwd(), '.agent-data', 'post-history.json');
+const EVOLUTION_INTERVAL = 20;
 
 export class MarketingScheduler {
   private api: EndGameApi;
@@ -32,6 +35,14 @@ export class MarketingScheduler {
   private postHistory: string[] = [];
   private running = false;
   private abortController: AbortController | null = null;
+  private postsSinceEvolution = 0;
+  private cycleStats: EvolutionStats = {
+    totalGenerated: 0,
+    safetyRejections: 0,
+    dedupRejections: 0,
+    postsFailed: 0,
+    postsSucceeded: 0,
+  };
 
   constructor(
     api: EndGameApi,
@@ -102,11 +113,14 @@ export class MarketingScheduler {
         const text = await this.generateSafeContent(channelName, gameContext);
         if (!text) {
           log.warn('All retries exhausted, skipping slot', { channel: channelName });
+          this.cycleStats.postsFailed++;
           return;
         }
 
         await channel.post(text, referralLink);
         this.addToHistory(text);
+        this.cycleStats.postsSucceeded++;
+        this.postsSinceEvolution++;
         log.info('Posted successfully', { channel: channelName, length: text.length });
       }),
     );
@@ -114,8 +128,40 @@ export class MarketingScheduler {
     for (const result of results) {
       if (result.status === 'rejected') {
         log.error('Channel post failed', { error: String(result.reason) });
+        this.cycleStats.postsFailed++;
       }
     }
+
+    await this.maybeEvolve();
+  }
+
+  private async maybeEvolve(): Promise<void> {
+    if (this.postsSinceEvolution < EVOLUTION_INTERVAL) return;
+
+    log.info('Evolution threshold reached, reflecting on personality', {
+      postsSinceEvolution: this.postsSinceEvolution,
+    });
+
+    try {
+      this.personality = await evolvePersonality(
+        this.llmConfig,
+        this.personality,
+        this.postHistory,
+        this.cycleStats,
+      );
+      savePersonality(this.personality);
+    } catch (err) {
+      log.warn('Evolution cycle failed', { error: String(err) });
+    }
+
+    this.postsSinceEvolution = 0;
+    this.cycleStats = {
+      totalGenerated: 0,
+      safetyRejections: 0,
+      dedupRejections: 0,
+      postsFailed: 0,
+      postsSucceeded: 0,
+    };
   }
 
   private async generateSafeContent(
@@ -132,15 +178,18 @@ export class MarketingScheduler {
           this.postHistory,
           this.referralCode,
         );
+        this.cycleStats.totalGenerated++;
 
         const safety = isSafe(text);
         if (!safety.safe) {
           log.warn('Safety filter rejected content', { attempt, reason: safety.reason });
+          this.cycleStats.safetyRejections++;
           continue;
         }
 
         if (isDuplicate(text, this.postHistory)) {
           log.warn('Duplicate content detected, retrying', { attempt });
+          this.cycleStats.dedupRejections++;
           continue;
         }
 

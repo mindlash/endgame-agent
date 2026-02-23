@@ -189,7 +189,7 @@ Done:
 - [x] Bounty submission document updated to reflect actual delivery (docs/SUBMISSION.md)
 
 TODO:
-- [ ] Personality evolution (engagement-based trait adjustment)
+- [x] Personality evolution (engagement-based trait adjustment)
 - [ ] End-to-end test against live API (requires funded wallet that wins a round)
 - [ ] Security audit by third party
 - [x] Marketing enforcement gate (session integrity vector — obfuscated discriminator gate)
