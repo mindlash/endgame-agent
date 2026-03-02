@@ -5,7 +5,9 @@
 
 .DESCRIPTION
     One-liner install:
-      irm https://endgame.cash/install.ps1 | iex
+      irm https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.ps1 | iex
+
+    Or download the repo zip, unzip, and double-click Install.bat
 
     What this does:
       1. Checks/installs Node.js 22 LTS

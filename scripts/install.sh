@@ -3,7 +3,9 @@
 # EndGame Agent Installer — macOS
 #
 # One-liner install:
-#   curl -fsSL https://endgame.cash/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.sh | bash
+#
+# Or download the repo zip, unzip, and run: bash scripts/install.sh
 #
 # What this does:
 #   1. Checks/installs Node.js 22 LTS

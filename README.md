@@ -40,17 +40,17 @@ The main process runs two subsystems: the **Round Monitor** (lottery polling and
 Open Terminal and paste:
 
 ```bash
-curl -fsSL https://endgame.cash/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.sh | bash
 ```
 
 ### Windows
 
-**Option A** — Double-click `Install.bat` (easiest, no PowerShell knowledge needed).
+**Option A** — [Download the zip](https://github.com/mindlash/endgame-agent/archive/refs/heads/main.zip), unzip it, and double-click **`scripts\Install.bat`**. Easiest path, no PowerShell knowledge needed.
 
 **Option B** — Open PowerShell and paste:
 
 ```powershell
-irm https://endgame.cash/install.ps1 | iex
+irm https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.ps1 | iex
 ```
 
 > **"Running scripts is disabled on this system"?** This happens because Windows blocks unsigned PowerShell scripts by default. Use Option A (the `.bat` file) which handles this for you, or run this first then retry:

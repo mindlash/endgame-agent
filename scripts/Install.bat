@@ -3,6 +3,10 @@
 ::
 :: Double-click this file to install. It handles PowerShell execution
 :: policy automatically so you don't have to.
+::
+:: Works two ways:
+::   1. Downloaded zip — runs the local install.ps1 next to this file
+::   2. Standalone — downloads install.ps1 from GitHub
 
 echo.
 echo  =================================
@@ -10,16 +14,16 @@ echo   EndGame Agent Installer
 echo  =================================
 echo.
 
-:: Check if running as admin (not required, but inform the user)
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  Note: Running without admin rights. This is fine for most setups.
+:: Try local install.ps1 first (zip download case)
+if exist "%~dp0install.ps1" (
+    echo  Found local installer, running...
     echo.
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+) else (
+    echo  Downloading installer from GitHub...
+    echo.
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.ps1 | iex"
 )
-
-:: Run the PowerShell installer with execution policy bypass.
-:: -Bypass is per-process only and does not change the system setting.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://endgame.cash/install.ps1 | iex"
 
 if %errorlevel% neq 0 (
     echo.
