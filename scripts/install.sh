@@ -2,15 +2,16 @@
 #
 # EndGame Agent Installer — macOS
 #
-# One-liner install:
+# From local source (recommended):
+#   Download zip, unzip, then: bash scripts/install.sh
+#
+# Remote one-liner:
 #   curl -fsSL https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.sh | bash
 #
-# Or download the repo zip, unzip, and run: bash scripts/install.sh
-#
 # What this does:
-#   1. Checks/installs Node.js 22 LTS
-#   2. Downloads pre-bundled release (verifies SHA-256)
-#   3. Extracts to ~/.endgame-agent/app/
+#   1. Checks/installs Node.js 22 LTS (needs internet if Node.js missing)
+#   2. Builds from local source OR downloads pre-bundled release
+#   3. Deploys to ~/.endgame-agent/
 #   4. Runs interactive setup wizard
 #   5. Offers Keychain password storage + sleep prevention
 #   6. Installs launchd service
@@ -21,7 +22,7 @@ set -euo pipefail
 
 AGENT_HOME="$HOME/.endgame-agent"
 NODE_VERSION="22.13.1"
-GITHUB_REPO="endgame-agent/endgame-agent"
+GITHUB_REPO="mindlash/endgame-agent"
 
 # Colors (if terminal supports them)
 RED='\033[0;31m'
@@ -32,6 +33,26 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+
+# ── Detect local source ──────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_REPO=""
+
+find_local_repo() {
+  local repo_root
+  repo_root="$(dirname "$SCRIPT_DIR")"
+
+  if [[ -f "$repo_root/package.json" ]]; then
+    local pkg_name
+    pkg_name=$(grep -o '"name": *"[^"]*"' "$repo_root/package.json" | head -1 | cut -d'"' -f4)
+    if [[ "$pkg_name" == "endgame-agent" ]]; then
+      LOCAL_REPO="$repo_root"
+      return 0
+    fi
+  fi
+  return 1
+}
 
 # ── Platform detection ────────────────────────────────────────────
 
@@ -46,7 +67,7 @@ detect_arch() {
 }
 
 check_macos() {
-  [[ "$(uname -s)" == "Darwin" ]] || error "This installer is for macOS only. See install.ps1 for Windows."
+  [[ "$(uname -s)" == "Darwin" ]] || error "This installer is for macOS only. See Install.bat for Windows."
 }
 
 # ── Node.js ───────────────────────────────────────────────────────
@@ -73,7 +94,7 @@ install_node() {
   local url="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-${arch}.tar.gz"
   local checksum_url="https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"
 
-  info "Installing Node.js $NODE_VERSION..."
+  info "Installing Node.js $NODE_VERSION (requires internet)..."
   mkdir -p "$node_dir"
 
   # Download
@@ -102,15 +123,44 @@ install_node() {
   info "Node.js installed to $node_dir"
 }
 
-# ── Agent download ────────────────────────────────────────────────
+# ── Local build ───────────────────────────────────────────────────
 
-download_agent() {
+install_agent_from_source() {
+  info "Building from local source: $LOCAL_REPO"
+
+  cd "$LOCAL_REPO"
+
+  # npm install
+  info "Installing dependencies (npm install)..."
+  npm install --ignore-scripts >/dev/null 2>&1
+  npm rebuild argon2 >/dev/null 2>&1
+  info "Dependencies installed"
+
+  # TypeScript build
+  info "Compiling TypeScript..."
+  npx tsc >/dev/null 2>&1
+  info "Build complete"
+
+  # Copy to AGENT_HOME/app/
+  local app_dir="$AGENT_HOME/app"
+  mkdir -p "$app_dir"
+
+  cp -R "$LOCAL_REPO/dist/"* "$app_dir/"
+  cp -R "$LOCAL_REPO/node_modules" "$app_dir/"
+  cp "$LOCAL_REPO/package.json" "$app_dir/"
+
+  info "Agent installed to $app_dir"
+}
+
+# ── Remote download (fallback) ────────────────────────────────────
+
+download_agent_from_github() {
   local arch
   arch=$(detect_arch)
   local asset_name="endgame-agent-darwin-${arch}.tar.gz"
   local checksum_name="endgame-agent-darwin-${arch}.tar.gz.sha256"
 
-  info "Fetching latest release..."
+  info "Fetching latest release from GitHub..."
   local release_json
   release_json=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest")
 
@@ -165,7 +215,8 @@ install_cli_wrapper() {
     node_bin="$(which node)"
   fi
 
-  local entry_point="$AGENT_HOME/app/endgame-agent.js"
+  # Entry point: cli.js in the app dir
+  local entry_point="$AGENT_HOME/app/cli.js"
 
   cat > "$bin_dir/endgame-agent" << WRAPPER
 #!/bin/bash
@@ -217,8 +268,14 @@ main() {
     install_node
   fi
 
-  # 2. Download agent
-  download_agent
+  # 2. Install agent — local source if available, GitHub release otherwise
+  if find_local_repo; then
+    info "Local source detected at $LOCAL_REPO"
+    install_agent_from_source
+  else
+    info "No local source found, downloading from GitHub..."
+    download_agent_from_github
+  fi
 
   # 3. Install CLI wrapper
   install_cli_wrapper

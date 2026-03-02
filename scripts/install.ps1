@@ -4,15 +4,17 @@
     EndGame Agent Installer — Windows
 
 .DESCRIPTION
-    One-liner install:
+    Install from local source (recommended):
+      1. Download the zip from GitHub and extract it
+      2. Right-click Install.bat -> "Run as administrator"
+
+    Or install remotely:
       irm https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.ps1 | iex
 
-    Or download the repo zip, unzip, and double-click Install.bat
-
     What this does:
-      1. Checks/installs Node.js 22 LTS
-      2. Downloads pre-bundled release (verifies SHA-256)
-      3. Extracts to ~/.endgame-agent/app/
+      1. Checks/installs Node.js 22 LTS (needs internet if Node.js missing)
+      2. Builds the agent from local source OR downloads a pre-bundled release
+      3. Deploys to ~/.endgame-agent/
       4. Runs interactive setup wizard
       5. Offers Credential Manager password storage
       6. Installs Task Scheduler service
@@ -24,11 +26,29 @@ $ErrorActionPreference = "Stop"
 
 $AgentHome = Join-Path $env:USERPROFILE ".endgame-agent"
 $NodeVersion = "22.13.1"
-$GitHubRepo = "endgame-agent/endgame-agent"
+$GitHubRepo = "mindlash/endgame-agent"
 
 function Write-Info { param([string]$Message) Write-Host "[INFO] $Message" -ForegroundColor Green }
 function Write-Warn { param([string]$Message) Write-Host "[WARN] $Message" -ForegroundColor Yellow }
 function Write-Err { param([string]$Message) Write-Host "[ERROR] $Message" -ForegroundColor Red; exit 1 }
+
+# ── Detect local source repo ─────────────────────────────────────
+
+function Find-LocalRepo {
+    # Check if we're running from inside the repo (zip extract or git clone)
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { $PWD.Path }
+    $repoRoot = Split-Path $scriptDir -Parent
+
+    # Look for package.json with our package name
+    $pkgJson = Join-Path $repoRoot "package.json"
+    if (Test-Path $pkgJson) {
+        $pkg = Get-Content $pkgJson -Raw | ConvertFrom-Json
+        if ($pkg.name -eq "endgame-agent") {
+            return $repoRoot
+        }
+    }
+    return $null
+}
 
 # ── Node.js ───────────────────────────────────────────────────────
 
@@ -53,7 +73,7 @@ function Install-NodeJS {
     $url = "https://nodejs.org/dist/v${NodeVersion}/node-v${NodeVersion}-win-${arch}.zip"
     $checksumUrl = "https://nodejs.org/dist/v${NodeVersion}/SHASUMS256.txt"
 
-    Write-Info "Installing Node.js $NodeVersion..."
+    Write-Info "Installing Node.js $NodeVersion (requires internet)..."
     New-Item -ItemType Directory -Path $nodeDir -Force | Out-Null
 
     $tmpFile = Join-Path $env:TEMP "node-install.zip"
@@ -81,18 +101,56 @@ function Install-NodeJS {
     Write-Info "Node.js installed to $nodeDir"
 }
 
-# ── Agent download ────────────────────────────────────────────────
+# ── Local build ───────────────────────────────────────────────────
 
-function Install-Agent {
+function Install-AgentFromSource {
+    param([string]$RepoRoot)
+
+    Write-Info "Building from local source: $RepoRoot"
+
+    # npm install
+    Write-Info "Installing dependencies (npm install)..."
+    Push-Location $RepoRoot
+    try {
+        & npm install --ignore-scripts 2>&1 | Out-Null
+        # argon2 needs a separate rebuild for its native addon
+        & npm rebuild argon2 2>&1 | Out-Null
+        Write-Info "Dependencies installed"
+
+        # TypeScript build
+        Write-Info "Compiling TypeScript..."
+        & npx tsc 2>&1 | Out-Null
+        Write-Info "Build complete"
+    } finally {
+        Pop-Location
+    }
+
+    # Copy dist/ to AGENT_HOME/app/
+    $appDir = Join-Path $AgentHome "app"
+    New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+
+    # Copy compiled output
+    Copy-Item -Path (Join-Path $RepoRoot "dist\*") -Destination $appDir -Recurse -Force
+    # Copy node_modules (needed at runtime for argon2, @solana/web3.js, etc.)
+    Copy-Item -Path (Join-Path $RepoRoot "node_modules") -Destination $appDir -Recurse -Force
+    # Copy package.json (needed for version detection)
+    Copy-Item -Path (Join-Path $RepoRoot "package.json") -Destination $appDir -Force
+
+    Write-Info "Agent installed to $appDir"
+}
+
+# ── Remote download (fallback) ────────────────────────────────────
+
+function Install-AgentFromGitHub {
     $assetName = "endgame-agent-win32-x64.tar.gz"
     $checksumName = "$assetName.sha256"
 
-    Write-Info "Fetching latest release..."
+    Write-Info "Fetching latest release from GitHub..."
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/${GitHubRepo}/releases/latest" -UseBasicParsing
 
     $asset = $release.assets | Where-Object { $_.name -eq $assetName }
     if (-not $asset) {
-        Write-Err "Could not find release asset: $assetName"
+        Write-Err "Could not find release asset: $assetName. Available: $($release.assets.name -join ', ')"
     }
 
     $checksumAsset = $release.assets | Where-Object { $_.name -eq $checksumName }
@@ -132,7 +190,8 @@ function Install-CliWrapper {
         Join-Path $AgentHome "node\node.exe"
     } else { "node" }
 
-    $entryPoint = Join-Path $AgentHome "app\endgame-agent.js"
+    # Entry point: cli.js in the app dir
+    $entryPoint = Join-Path $AgentHome "app\cli.js"
 
     # Create .cmd wrapper
     $cmdContent = @"
@@ -163,7 +222,7 @@ function Main {
     Write-Host "=================================" -ForegroundColor Cyan
     Write-Host ""
 
-    # Create agent home
+    # Create agent home directories
     @("app", "data", "config", "logs", "bin") | ForEach-Object {
         New-Item -ItemType Directory -Path (Join-Path $AgentHome $_) -Force | Out-Null
     }
@@ -173,8 +232,15 @@ function Main {
         Install-NodeJS
     }
 
-    # 2. Download agent
-    Install-Agent
+    # 2. Install agent — local source if available, GitHub release otherwise
+    $localRepo = Find-LocalRepo
+    if ($localRepo) {
+        Write-Info "Local source detected at $localRepo"
+        Install-AgentFromSource -RepoRoot $localRepo
+    } else {
+        Write-Info "No local source found, downloading from GitHub..."
+        Install-AgentFromGitHub
+    }
 
     # 3. Install CLI wrapper
     Install-CliWrapper

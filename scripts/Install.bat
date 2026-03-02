@@ -1,12 +1,10 @@
 @echo off
 :: EndGame Agent Installer for Windows
 ::
-:: Double-click this file to install. It handles PowerShell execution
-:: policy automatically so you don't have to.
+:: Right-click this file -> "Run as administrator"
 ::
-:: Works two ways:
-::   1. Downloaded zip — runs the local install.ps1 next to this file
-::   2. Standalone — downloads install.ps1 from GitHub
+:: This runs the local install.ps1 from the same folder.
+:: No internet needed except to install Node.js (if you don't have it).
 
 echo.
 echo  =================================
@@ -14,16 +12,27 @@ echo   EndGame Agent Installer
 echo  =================================
 echo.
 
-:: Try local install.ps1 first (zip download case)
-if exist "%~dp0install.ps1" (
-    echo  Found local installer, running...
+:: Check admin
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo  ERROR: Please right-click Install.bat and select "Run as administrator"
     echo.
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
-) else (
-    echo  Downloading installer from GitHub...
-    echo.
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.ps1 | iex"
+    pause
+    exit /b 1
 )
+
+:: Find install.ps1 next to this .bat
+if not exist "%~dp0install.ps1" (
+    echo  ERROR: install.ps1 not found next to Install.bat
+    echo  Make sure you extracted the full zip file.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo  Running installer...
+echo.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
 
 if %errorlevel% neq 0 (
     echo.

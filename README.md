@@ -35,30 +35,27 @@ The main process runs two subsystems: the **Round Monitor** (lottery polling and
 
 ## Install (One-Command)
 
+### Windows
+
+1. [Download the zip](https://github.com/mindlash/endgame-agent/archive/refs/heads/main.zip) and extract it
+2. Open the `scripts` folder
+3. Right-click **`Install.bat`** and select **"Run as administrator"**
+
+That's it. The installer builds from the local source — no GitHub access needed (except to download Node.js if you don't have it). It walks you through setup, then starts the agent as a background service.
+
 ### macOS
 
-Open Terminal and paste:
+Download the zip and extract it, then open Terminal and run:
+
+```bash
+bash path/to/endgame-agent/scripts/install.sh
+```
+
+Or if you prefer a remote one-liner:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.sh | bash
 ```
-
-### Windows
-
-**Option A** — [Download the zip](https://github.com/mindlash/endgame-agent/archive/refs/heads/main.zip), unzip it, and double-click **`scripts\Install.bat`**. Easiest path, no PowerShell knowledge needed.
-
-**Option B** — Open PowerShell and paste:
-
-```powershell
-irm https://raw.githubusercontent.com/mindlash/endgame-agent/main/scripts/install.ps1 | iex
-```
-
-> **"Running scripts is disabled on this system"?** This happens because Windows blocks unsigned PowerShell scripts by default. Use Option A (the `.bat` file) which handles this for you, or run this first then retry:
-> ```powershell
-> Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
-> ```
-
-The installer handles everything: Node.js, the agent, setup wizard, and background service registration. You won't need to touch a terminal again after install.
 
 ### Available Commands (after install)
 
