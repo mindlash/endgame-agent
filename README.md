@@ -33,7 +33,49 @@ Self-hosted auto-claim bot and AI marketing engine for [EndGame](https://endgame
 
 The main process runs two subsystems: the **Round Monitor** (lottery polling and claim execution) and the **Marketing Engine** (AI content generation and channel posting). The signer subprocess holds the decrypted private key in complete isolation -- it has no network access and no LLM access. It communicates with the main process exclusively through Node.js IPC.
 
-## Quick Start
+## Install (One-Command)
+
+### macOS
+
+Open Terminal and paste:
+
+```bash
+curl -fsSL https://endgame.cash/install.sh | bash
+```
+
+### Windows
+
+**Option A** — Double-click `Install.bat` (easiest, no PowerShell knowledge needed).
+
+**Option B** — Open PowerShell and paste:
+
+```powershell
+irm https://endgame.cash/install.ps1 | iex
+```
+
+> **"Running scripts is disabled on this system"?** This happens because Windows blocks unsigned PowerShell scripts by default. Use Option A (the `.bat` file) which handles this for you, or run this first then retry:
+> ```powershell
+> Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
+The installer handles everything: Node.js, the agent, setup wizard, and background service registration. You won't need to touch a terminal again after install.
+
+### Available Commands (after install)
+
+```
+endgame-agent status       Check if it's running
+endgame-agent logs         See what it's doing
+endgame-agent start        Start the agent
+endgame-agent stop         Stop the agent
+endgame-agent update       Update to latest version
+endgame-agent uninstall    Remove everything
+```
+
+---
+
+## Manual Setup (Developers)
+
+If you prefer to clone and build from source:
 
 ```bash
 # Clone and install
@@ -149,11 +191,12 @@ npm run lint       # ESLint
 
 ```
 src/
-  cli.ts                          # npx entry point (setup vs. run routing)
+  cli.ts                          # CLI router (run/setup/status/start/stop/update/uninstall)
   index.ts                        # Main agent entry point
   core/
-    config.ts                     # Environment variable parsing and validation
+    config.ts                     # AGENT_HOME resolution, env parsing, validation
     logger.ts                     # Structured JSON logger
+    integrity.ts                  # Session integrity vector
   api/
     client.ts                     # EndGame API client (all endpoints)
   claim/
@@ -161,27 +204,31 @@ src/
     executor.ts                   # Solana transaction building and submission
   security/
     keystore.ts                   # Argon2id encrypt/decrypt
-    signer.ts                     # Isolated signing subprocess
+    signer.ts                     # Isolated signing subprocess + transaction validation
   marketing/
     engine.ts                     # Personality system and content pipeline
     scheduler.ts                  # Timed posting loop
     llm.ts                        # Claude/OpenAI content generation
+    evolution.ts                  # LLM-driven personality evolution
     channels/
       twitter.ts                  # Twitter/X v2 API adapter
       discord.ts                  # Discord webhook adapter
       telegram.ts                 # Telegram Bot API adapter
   cli/
     setup.ts                      # Interactive setup wizard
+    credentials.ts                # macOS Keychain / Windows Credential Manager
+    service.ts                    # launchd (macOS) / Task Scheduler (Windows)
+    health.ts                     # Health check report
+    update.ts                     # Manual update with SHA-256 verification
+    uninstall.ts                  # Clean removal
+scripts/
+  bundle.ts                       # esbuild bundler for pre-built releases
+  install.sh                      # macOS one-command installer
+  install.ps1                     # Windows PowerShell installer
+  Install.bat                     # Windows double-click installer wrapper
 docker/
   Dockerfile                      # Multi-stage production build
   docker-compose.yml              # Single-command deployment
-tests/
-  api.test.ts                     # API client tests
-  config.test.ts                  # Configuration parsing tests
-  monitor.test.ts                 # Round monitor tests
-  engine.test.ts                  # Marketing engine tests
-  llm.test.ts                     # LLM integration tests
-  channels.test.ts                # Channel adapter tests
 ```
 
 ## License
