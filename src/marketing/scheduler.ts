@@ -24,6 +24,7 @@ const MAX_RETRIES = 3;
 const HISTORY_LIMIT = 50;
 const JITTER_MS = 15 * 60 * 1000; // +/- 15 minutes
 const HISTORY_FILE = join(resolveDataDir(), 'post-history.json');
+const LAST_POST_FILE = join(resolveDataDir(), 'last-post-time.txt');
 const EVOLUTION_INTERVAL = 20;
 
 export class MarketingScheduler {
@@ -70,9 +71,17 @@ export class MarketingScheduler {
     const intervalMs = (24 * 60 * 60 * 1000) / this.postsPerDay;
     log.info('Scheduler started', { postsPerDay: this.postsPerDay, intervalMs, channels: this.channels.length });
 
+    // If we posted recently (e.g. restart after update), wait the remaining interval
+    const initialDelay = this.getTimeSinceLastPost(intervalMs);
+    if (initialDelay > 0) {
+      log.info('Resuming scheduler, next post in', { delayMs: Math.round(initialDelay) });
+      await this.sleep(initialDelay);
+    }
+
     while (this.running) {
       try {
         await this.postCycle();
+        this.saveLastPostTime();
       } catch (err) {
         log.error('Post cycle failed', { error: String(err) });
       }
@@ -261,6 +270,29 @@ export class MarketingScheduler {
       writeFileSync(HISTORY_FILE, JSON.stringify(this.postHistory, null, 2) + '\n');
     } catch (err) {
       log.warn('Failed to save post history', { error: String(err) });
+    }
+  }
+
+  // ── Last post time tracking (survives restarts) ─────────────────
+
+  private saveLastPostTime(): void {
+    try {
+      mkdirSync(dirname(LAST_POST_FILE), { recursive: true });
+      writeFileSync(LAST_POST_FILE, Date.now().toString());
+    } catch { /* best effort */ }
+  }
+
+  /** Returns ms to wait before first post. 0 = post immediately. */
+  private getTimeSinceLastPost(intervalMs: number): number {
+    try {
+      if (!existsSync(LAST_POST_FILE)) return 0;
+      const lastMs = parseInt(readFileSync(LAST_POST_FILE, 'utf-8').trim(), 10);
+      if (isNaN(lastMs)) return 0;
+      const elapsed = Date.now() - lastMs;
+      const remaining = intervalMs - elapsed;
+      return remaining > 60_000 ? remaining : 0; // if less than 1 min left, just post
+    } catch {
+      return 0;
     }
   }
 }
