@@ -22,6 +22,27 @@ export class DiscordChannel implements ChannelAdapter {
     this.webhookUrl = webhookUrl;
   }
 
+  async delete(postId: string): Promise<void> {
+    const url = `${this.webhookUrl}/messages/${postId}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: 'DELETE',
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Discord delete failed (${res.status}): ${body}`);
+      }
+      log.info('Deleted Discord message', { postId });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async post(content: string, referralLink?: string): Promise<{ postId: string }> {
     let text = content;
     if (referralLink) {

@@ -191,7 +191,7 @@ async function main(): Promise<void> {
     const personality = loadOrCreatePersonality();
     scheduler = new MarketingScheduler(
       api,
-      { provider: config.llmProvider, apiKey: config.llmApiKey, model: config.llmModel },
+      { provider: config.llmProvider, apiKey: config.llmApiKey, model: config.llmModel, ollamaBaseUrl: config.ollamaBaseUrl },
       channels,
       personality,
       config.referralCode,

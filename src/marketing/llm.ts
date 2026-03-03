@@ -10,17 +10,21 @@ import type { Personality } from './engine.js';
 
 const log = createLogger('llm');
 
-export type LlmProvider = 'claude' | 'openai';
+export type LlmProvider = 'claude' | 'openai' | 'gemini' | 'groq' | 'ollama';
 
 export interface LlmConfig {
   provider: LlmProvider;
   apiKey: string;
   model?: string;
+  ollamaBaseUrl?: string;
 }
 
 const DEFAULT_MODELS: Record<LlmProvider, string> = {
   claude: 'claude-sonnet-4-5-20250929',
   openai: 'gpt-4o-mini',
+  gemini: 'gemini-2.0-flash',
+  groq: 'llama-3.3-70b-versatile',
+  ollama: 'llama3.2',
 };
 
 const CHAR_LIMITS: Record<string, number> = {
@@ -167,6 +171,114 @@ async function callOpenAI(apiKey: string, model: string, system: string, user: s
   }
 }
 
+async function callGemini(apiKey: string, model: string, system: string, user: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: user }] }],
+        generationConfig: { maxOutputTokens: 300 },
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Gemini API ${res.status}: ${body}`);
+    }
+
+    const json = (await res.json()) as {
+      candidates: Array<{ content: { parts: Array<{ text: string }> } }>;
+    };
+    return (json.candidates[0]?.content?.parts[0]?.text ?? '').trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callGroq(apiKey: string, model: string, system: string, user: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 300,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Groq API ${res.status}: ${body}`);
+    }
+
+    const json = (await res.json()) as {
+      choices: Array<{ message: { content: string } }>;
+    };
+    return (json.choices[0].message.content ?? '').trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callOllama(baseUrl: string, model: string, system: string, user: string): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        stream: false,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+      }),
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Ollama API ${res.status}: ${body}`);
+    }
+
+    const json = (await res.json()) as { message: { content: string } };
+    return (json.message.content ?? '').trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function dispatchLlm(config: LlmConfig, model: string, system: string, user: string): Promise<string> {
+  switch (config.provider) {
+    case 'claude': return callClaude(config.apiKey, model, system, user);
+    case 'openai': return callOpenAI(config.apiKey, model, system, user);
+    case 'gemini': return callGemini(config.apiKey, model, system, user);
+    case 'groq': return callGroq(config.apiKey, model, system, user);
+    case 'ollama': return callOllama(config.ollamaBaseUrl ?? 'http://localhost:11434', model, system, user);
+  }
+}
+
 /**
  * Raw LLM dispatch — sends system + user prompt to the configured provider.
  * Used by evolution.ts for personality reflection without duplicating API logic.
@@ -176,12 +288,7 @@ export async function callLlmRaw(config: LlmConfig, system: string, user: string
 
   log.debug('Raw LLM call', { provider: config.provider, model });
 
-  const text =
-    config.provider === 'claude'
-      ? await callClaude(config.apiKey, model, system, user)
-      : await callOpenAI(config.apiKey, model, system, user);
-
-  return text;
+  return dispatchLlm(config, model, system, user);
 }
 
 export async function generateContent(
@@ -197,10 +304,7 @@ export async function generateContent(
 
   log.debug('Generating content', { provider: config.provider, model, channel });
 
-  const text =
-    config.provider === 'claude'
-      ? await callClaude(config.apiKey, model, system, user)
-      : await callOpenAI(config.apiKey, model, system, user);
+  const text = await dispatchLlm(config, model, system, user);
 
   log.info('Content generated', { channel, length: text.length });
   return text;

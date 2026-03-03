@@ -378,3 +378,112 @@ describe('TwitterChannel', () => {
     expect(options.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+// ── Delete Method Tests ──────────────────────────────────────────────
+
+describe('DiscordChannel.delete', () => {
+  const VALID_WEBHOOK = 'https://discord.com/api/webhooks/123456/abcdef';
+
+  it('sends DELETE to webhook/messages/{postId}', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 204,
+    } as unknown as Response);
+
+    const channel = new DiscordChannel(VALID_WEBHOOK);
+    await channel.delete('msg_123');
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe(`${VALID_WEBHOOK}/messages/msg_123`);
+    expect(options.method).toBe('DELETE');
+  });
+
+  it('throws on non-OK delete response', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: () => Promise.resolve('Unknown Message'),
+    } as unknown as Response);
+
+    const channel = new DiscordChannel(VALID_WEBHOOK);
+    await expect(channel.delete('bad_id')).rejects.toThrow('Discord delete failed (404)');
+  });
+});
+
+describe('TelegramChannel.delete', () => {
+  const BOT_TOKEN = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11';
+  const CHAT_ID = '-1001234567890';
+
+  it('sends deleteMessage request with correct payload', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ok: true }),
+    } as unknown as Response);
+
+    const channel = new TelegramChannel(BOT_TOKEN, CHAT_ID);
+    await channel.delete('42');
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe(`https://api.telegram.org/bot${BOT_TOKEN}/deleteMessage`);
+    expect(options.method).toBe('POST');
+    const body = JSON.parse(options.body);
+    expect(body.chat_id).toBe(CHAT_ID);
+    expect(body.message_id).toBe(42);
+  });
+
+  it('throws on non-OK delete response', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: () => Promise.resolve('Bad Request'),
+    } as unknown as Response);
+
+    const channel = new TelegramChannel(BOT_TOKEN, CHAT_ID);
+    await expect(channel.delete('99')).rejects.toThrow('Telegram delete failed (400)');
+  });
+
+  it('throws on Telegram API error (ok: false)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ ok: false, description: 'message to delete not found' }),
+    } as unknown as Response);
+
+    const channel = new TelegramChannel(BOT_TOKEN, CHAT_ID);
+    await expect(channel.delete('999')).rejects.toThrow('Telegram delete error: message to delete not found');
+  });
+});
+
+describe('TwitterChannel.delete', () => {
+  const VALID_CONFIG = {
+    apiKey: 'test-api-key',
+    apiSecret: 'test-api-secret',
+    accessToken: 'test-access-token',
+    accessTokenSecret: 'test-access-token-secret',
+  };
+
+  it('sends DELETE to correct tweet endpoint with OAuth header', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+    } as unknown as Response);
+
+    const channel = new TwitterChannel(VALID_CONFIG);
+    await channel.delete('tweet_123');
+
+    const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toBe('https://api.twitter.com/2/tweets/tweet_123');
+    expect(options.method).toBe('DELETE');
+    expect(options.headers['Authorization']).toMatch(/^OAuth /);
+  });
+
+  it('throws on non-OK delete response', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      text: () => Promise.resolve('Forbidden'),
+    } as unknown as Response);
+
+    const channel = new TwitterChannel(VALID_CONFIG);
+    await expect(channel.delete('tweet_bad')).rejects.toThrow('Twitter delete failed (403)');
+  });
+});

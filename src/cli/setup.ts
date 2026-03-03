@@ -15,10 +15,151 @@ import { generatePersonalitySeed } from '../marketing/engine.js';
 import { resolveDataDir, resolveConfigDir } from '../core/config.js';
 import { isCredentialStoreAvailable, storePassword } from './credentials.js';
 import { installService } from './service.js';
+import type { LlmProvider } from '../marketing/llm.js';
 
 const DATA_DIR = resolveDataDir();
 const KEYFILE_PATH = join(DATA_DIR, 'keyfile.json');
 const PERSONALITY_PATH = join(DATA_DIR, 'personality.json');
+
+const VALID_LLM_PROVIDERS = new Set<string>(['claude', 'openai', 'gemini', 'groq', 'ollama']);
+
+const LLM_TIMEOUT_MS = 15_000;
+const CHANNEL_TIMEOUT_MS = 15_000;
+
+// ── Credential Test Helpers ─────────────────────────────────────────
+
+async function testLlm(provider: LlmProvider, apiKey: string, ollamaBaseUrl?: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+  try {
+    switch (provider) {
+      case 'claude': {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 10,
+            messages: [{ role: 'user', content: "Say 'OK' in one word" }],
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) return `Claude API ${res.status}: ${await res.text().catch(() => '')}`;
+        return null;
+      }
+      case 'openai': {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            max_tokens: 10,
+            messages: [{ role: 'user', content: "Say 'OK' in one word" }],
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) return `OpenAI API ${res.status}: ${await res.text().catch(() => '')}`;
+        return null;
+      }
+      case 'gemini': {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: "Say 'OK' in one word" }] }],
+            generationConfig: { maxOutputTokens: 10 },
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) return `Gemini API ${res.status}: ${await res.text().catch(() => '')}`;
+        return null;
+      }
+      case 'groq': {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            max_tokens: 10,
+            messages: [{ role: 'user', content: "Say 'OK' in one word" }],
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) return `Groq API ${res.status}: ${await res.text().catch(() => '')}`;
+        return null;
+      }
+      case 'ollama': {
+        const base = ollamaBaseUrl ?? 'http://localhost:11434';
+        const res = await fetch(`${base}/api/chat`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'llama3.2',
+            stream: false,
+            messages: [{ role: 'user', content: "Say 'OK' in one word" }],
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) return `Ollama API ${res.status}: ${await res.text().catch(() => '')}`;
+        return null;
+      }
+    }
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function testTwitter(apiKey: string, apiSecret: string, accessToken: string, accessTokenSecret: string): Promise<string | null> {
+  try {
+    const { TwitterChannel } = await import('../marketing/channels/twitter.js');
+    const channel = new TwitterChannel({ apiKey, apiSecret, accessToken, accessTokenSecret });
+    const { postId } = await channel.post('EndGame Agent connected! [test]');
+    await channel.delete(postId);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function testDiscord(webhookUrl: string): Promise<string | null> {
+  try {
+    const { DiscordChannel } = await import('../marketing/channels/discord.js');
+    const channel = new DiscordChannel(webhookUrl);
+    const { postId } = await channel.post('EndGame Agent connected! [test]');
+    await channel.delete(postId);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function testTelegram(botToken: string, chatId: string): Promise<string | null> {
+  try {
+    const { TelegramChannel } = await import('../marketing/channels/telegram.js');
+    const channel = new TelegramChannel(botToken, chatId);
+    const { postId } = await channel.post('EndGame Agent connected! [test]');
+    await channel.delete(postId);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+// ── Main Setup ──────────────────────────────────────────────────────
 
 export async function setup(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -96,12 +237,50 @@ export async function setup(): Promise<void> {
   const referralCode = await ask('Your EndGame referral code (optional, press Enter to skip): ');
 
   // Step 4: LLM provider
+  console.log(`
+=== LLM Provider ===
+The marketing engine needs an LLM to generate posts.
+
+  claude  — Best quality. ~$3/MTok. Get key: https://console.anthropic.com/settings/keys
+  openai  — Good quality. ~$0.15/MTok. Get key: https://platform.openai.com/api-keys
+  gemini  — FREE (15 req/min). Get key: https://aistudio.google.com/apikeys
+  groq    — FREE (30 req/min, open models). Get key: https://console.groq.com/keys
+  ollama  — FREE, runs locally. Install: https://ollama.com then: ollama pull llama3.2
+`);
+
   let llmProvider = '';
-  while (llmProvider !== 'claude' && llmProvider !== 'openai') {
-    llmProvider = (await ask('LLM provider (claude/openai): ')).trim().toLowerCase();
+  while (!VALID_LLM_PROVIDERS.has(llmProvider)) {
+    llmProvider = (await ask('LLM provider (claude/openai/gemini/groq/ollama): ')).trim().toLowerCase();
   }
-  const llmApiKey = await ask(`${llmProvider} API key: `);
+
+  let llmApiKey = '';
+  let ollamaBaseUrl = '';
+  if (llmProvider === 'ollama') {
+    ollamaBaseUrl = (await ask('Ollama base URL (press Enter for http://localhost:11434): ')).trim() || 'http://localhost:11434';
+  } else {
+    llmApiKey = await ask(`${llmProvider} API key: `);
+  }
   const llmModel = await ask('Model override (press Enter for default): ');
+
+  // Test LLM connection
+  const testLlmChoice = (await ask('Test LLM connection? (y/n): ')).trim().toLowerCase();
+  if (testLlmChoice === 'y') {
+    process.stdout.write('  Testing...');
+    const err = await testLlm(llmProvider as LlmProvider, llmApiKey, ollamaBaseUrl || undefined);
+    if (err) {
+      console.log(` FAILED\n  Error: ${err}`);
+      const retry = (await ask('  Re-enter credentials? (y/n): ')).trim().toLowerCase();
+      if (retry === 'y') {
+        if (llmProvider === 'ollama') {
+          ollamaBaseUrl = (await ask('  Ollama base URL: ')).trim() || 'http://localhost:11434';
+        } else {
+          llmApiKey = await ask(`  ${llmProvider} API key: `);
+        }
+      }
+    } else {
+      console.log(' OK');
+    }
+  }
 
   // Step 5: Marketing channels
   const enabledChannels: string[] = [];
@@ -116,20 +295,79 @@ export async function setup(): Promise<void> {
     `MARKETING_ENABLED=true`,
     ``,
     `LLM_PROVIDER=${llmProvider}`,
-    `LLM_API_KEY=${llmApiKey}`,
   ];
+  if (llmProvider !== 'ollama') {
+    envLines.push(`LLM_API_KEY=${llmApiKey}`);
+  } else {
+    envLines.push(`OLLAMA_BASE_URL=${ollamaBaseUrl}`);
+  }
   if (llmModel.trim()) envLines.push(`LLM_MODEL=${llmModel.trim()}`);
   if (referralCode.trim()) envLines.push(`REFERRAL_CODE=${referralCode.trim()}`);
   envLines.push('');
 
   // Twitter (optional)
+  console.log(`
+=== Twitter/X (Optional) ===
+Requires a paid Basic tier dev account ($5/month at developer.x.com).
+
+  1. Sign up at https://developer.x.com -> subscribe to the Basic plan
+
+  2. Developer Portal -> Projects & Apps -> Create a new Project + App
+     - Project name: anything (e.g. "EndGame Agent")
+     - Use case: choose anything (e.g. "Making a bot")
+     - App name: anything unique (e.g. "endgame-agent-yourname")
+
+  3. IMPORTANT — Set up "User authentication settings" BEFORE generating tokens:
+     App Settings -> scroll to "User authentication settings" -> "Set up"
+     - App permissions:  "Read and Write"
+     - Type of App:      "Web App, Automated App or Bot"
+     - Callback URL:     https://example.com  (required but we don't use it)
+     - Website URL:      https://endgame.cash  (required, any URL works)
+     -> Save
+     ** It will show a "Client ID" and "Client Secret" — IGNORE THESE. **
+     ** Those are OAuth 2.0 keys we don't use. Just close/dismiss that dialog. **
+
+  4. Go to "Keys and tokens" tab (this is where YOUR keys are):
+     a. Under "Consumer Keys" -> "Regenerate" -> copy both values:
+        "API Key"        = what we call "API Key" below
+        "API Key Secret" = what we call "API Key Secret" below
+        (shown only once — save them!)
+     b. Under "Authentication Tokens" -> "Generate" -> copy both values:
+        "Access Token"        = what we call "Access Token" below
+        "Access Token Secret" = what we call "Access Token Secret" below
+        (also shown only once — save them!)
+
+  Common mistakes:
+  - Generating tokens BEFORE setting "Read and Write" = read-only tokens
+    Fix: change permissions, then Regenerate both Consumer Keys AND Access Tokens
+  - Choosing "Native App" instead of "Web App, Automated App or Bot"
+  - Using the Free tier = 401/403 errors (Free tier cannot post tweets)
+`);
   const useTwitter = (await ask('Enable Twitter/X? (y/n): ')).trim().toLowerCase();
   if (useTwitter === 'y') {
-    console.log('  Twitter requires a paid Basic tier dev account ($5/month).');
-    const apiKey = await ask('  Twitter API Key: ');
-    const apiSecret = await ask('  Twitter API Secret: ');
-    const accessToken = await ask('  Twitter Access Token: ');
-    const accessTokenSecret = await ask('  Twitter Access Token Secret: ');
+    let apiKey = await ask('  API Key (from Consumer Keys): ');
+    let apiSecret = await ask('  API Key Secret (from Consumer Keys): ');
+    let accessToken = await ask('  Access Token (from Authentication Tokens): ');
+    let accessTokenSecret = await ask('  Access Token Secret (from Authentication Tokens): ');
+
+    const testChoice = (await ask('  Test Twitter connection? (y/n): ')).trim().toLowerCase();
+    if (testChoice === 'y') {
+      process.stdout.write('  Testing (post + delete)...');
+      const err = await testTwitter(apiKey, apiSecret, accessToken, accessTokenSecret);
+      if (err) {
+        console.log(` FAILED\n  Error: ${err}`);
+        const retry = (await ask('  Re-enter credentials? (y/n): ')).trim().toLowerCase();
+        if (retry === 'y') {
+          apiKey = await ask('  API Key: ');
+          apiSecret = await ask('  API Key Secret: ');
+          accessToken = await ask('  Access Token: ');
+          accessTokenSecret = await ask('  Access Token Secret: ');
+        }
+      } else {
+        console.log(' OK');
+      }
+    }
+
     envLines.push(`TWITTER_API_KEY=${apiKey}`);
     envLines.push(`TWITTER_API_SECRET=${apiSecret}`);
     envLines.push(`TWITTER_ACCESS_TOKEN=${accessToken}`);
@@ -138,18 +376,68 @@ export async function setup(): Promise<void> {
   }
 
   // Discord (optional)
+  console.log(`
+=== Discord (Optional, FREE) ===
+
+  1. Open Discord -> go to your server
+  2. Right-click channel -> Edit Channel -> Integrations -> Webhooks
+  3. Click "New Webhook" -> copy the URL
+`);
   const useDiscord = (await ask('Enable Discord? (y/n): ')).trim().toLowerCase();
   if (useDiscord === 'y') {
-    const webhookUrl = await ask('  Discord Webhook URL: ');
+    let webhookUrl = await ask('  Discord Webhook URL: ');
+
+    const testChoice = (await ask('  Test Discord connection? (y/n): ')).trim().toLowerCase();
+    if (testChoice === 'y') {
+      process.stdout.write('  Testing (post + delete)...');
+      const err = await testDiscord(webhookUrl);
+      if (err) {
+        console.log(` FAILED\n  Error: ${err}`);
+        const retry = (await ask('  Re-enter webhook URL? (y/n): ')).trim().toLowerCase();
+        if (retry === 'y') {
+          webhookUrl = await ask('  Discord Webhook URL: ');
+        }
+      } else {
+        console.log(' OK');
+      }
+    }
+
     envLines.push(`DISCORD_WEBHOOK_URL=${webhookUrl}`);
     enabledChannels.push('discord');
   }
 
   // Telegram (optional)
+  console.log(`
+=== Telegram (Optional, FREE) ===
+
+  1. Open Telegram, search for @BotFather, send /newbot
+  2. Follow prompts to name it, copy the bot token
+  3. Add the bot to your channel/group as admin
+  4. For Chat ID: send a message in the chat, then visit:
+     https://api.telegram.org/bot<TOKEN>/getUpdates
+     Look for "chat":{"id": NUMBER}
+`);
   const useTelegram = (await ask('Enable Telegram? (y/n): ')).trim().toLowerCase();
   if (useTelegram === 'y') {
-    const botToken = await ask('  Telegram Bot Token (from @BotFather): ');
-    const chatId = await ask('  Telegram Chat/Channel ID: ');
+    let botToken = await ask('  Telegram Bot Token (from @BotFather): ');
+    let chatId = await ask('  Telegram Chat/Channel ID: ');
+
+    const testChoice = (await ask('  Test Telegram connection? (y/n): ')).trim().toLowerCase();
+    if (testChoice === 'y') {
+      process.stdout.write('  Testing (post + delete)...');
+      const err = await testTelegram(botToken, chatId);
+      if (err) {
+        console.log(` FAILED\n  Error: ${err}`);
+        const retry = (await ask('  Re-enter credentials? (y/n): ')).trim().toLowerCase();
+        if (retry === 'y') {
+          botToken = await ask('  Telegram Bot Token: ');
+          chatId = await ask('  Telegram Chat/Channel ID: ');
+        }
+      } else {
+        console.log(' OK');
+      }
+    }
+
     envLines.push(`TELEGRAM_BOT_TOKEN=${botToken}`);
     envLines.push(`TELEGRAM_CHAT_ID=${chatId}`);
     enabledChannels.push('telegram');
@@ -159,6 +447,11 @@ export async function setup(): Promise<void> {
     envLines.push(`MARKETING_CHANNELS=${enabledChannels.join(',')}`);
   } else {
     envLines.push('MARKETING_ENABLED=false');
+  }
+
+  if (enabledChannels.length > 0) {
+    console.log(`\nMarketing: 4 posts/day (~every 6 hours, randomized +/-15min)`);
+    console.log(`Change later in config: POSTS_PER_DAY=8`);
   }
 
   // Write .env with restrictive permissions (0600 = owner read/write only)

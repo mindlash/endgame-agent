@@ -190,7 +190,7 @@ function installWindows(): void {
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <RestartOnFailure>
-      <Interval>PT30S</Interval>
+      <Interval>PT1M</Interval>
       <Count>999</Count>
     </RestartOnFailure>
   </Settings>

@@ -98,6 +98,29 @@ export class TwitterChannel implements ChannelAdapter {
     this.config = config;
   }
 
+  async delete(postId: string): Promise<void> {
+    const url = `${TWEETS_ENDPOINT}/${postId}`;
+    const authorization = buildOAuthHeader('DELETE', url, this.config);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: { Authorization: authorization },
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Twitter delete failed (${res.status}): ${body}`);
+      }
+      log.info('Deleted tweet', { postId });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async post(content: string, referralLink?: string): Promise<{ postId: string }> {
     let text = content;
 

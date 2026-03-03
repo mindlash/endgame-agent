@@ -33,6 +33,34 @@ export class TelegramChannel implements ChannelAdapter {
     this.chatId = chatId;
   }
 
+  async delete(postId: string): Promise<void> {
+    const url = `${API_BASE}/bot${this.botToken}/deleteMessage`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: this.chatId, message_id: parseInt(postId, 10) }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Telegram delete failed (${res.status}): ${body}`);
+      }
+
+      const data = (await res.json()) as TelegramResponse;
+      if (!data.ok) {
+        throw new Error(`Telegram delete error: ${data.description ?? 'unknown error'}`);
+      }
+      log.info('Deleted Telegram message', { postId, chatId: this.chatId });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async post(content: string, referralLink?: string): Promise<{ postId: string }> {
     let text = content;
     if (referralLink) {

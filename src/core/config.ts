@@ -41,9 +41,10 @@ export interface AgentConfig {
   postsPerDay: number;
 
   // LLM
-  llmProvider: 'claude' | 'openai';
+  llmProvider: 'claude' | 'openai' | 'gemini' | 'groq' | 'ollama';
   llmApiKey: string;
   llmModel?: string;
+  ollamaBaseUrl: string;
 
   // API
   apiBaseUrl: string;
@@ -100,9 +101,10 @@ export function loadConfig(): AgentConfig {
     marketingChannels: parseChannels(env('MARKETING_CHANNELS', '')),
     referralCode: env('REFERRAL_CODE', ''),
     postsPerDay: parseInt(env('POSTS_PER_DAY', '4')),
-    llmProvider: env('LLM_PROVIDER', 'claude') as 'claude' | 'openai',
+    llmProvider: env('LLM_PROVIDER', 'claude') as AgentConfig['llmProvider'],
     llmApiKey: env('LLM_API_KEY', ''),
     llmModel: process.env['LLM_MODEL'],
+    ollamaBaseUrl: env('OLLAMA_BASE_URL', 'http://localhost:11434'),
     apiBaseUrl: env('API_BASE_URL', 'https://api.endgame.cash'),
     apiTimeoutMs: parseInt(env('API_TIMEOUT_MS', '15000')),
     rpcEndpoint: env('SOLANA_RPC_URL', 'https://api.mainnet-beta.solana.com'),
