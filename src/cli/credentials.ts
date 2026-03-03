@@ -76,23 +76,43 @@ export function retrievePassword(): string | null {
     }
 
     if (platform() === 'win32') {
-      // Use PowerShell to read the credential — cmdkey can't output passwords
-      const script = `
-        Add-Type -AssemblyName System.Runtime.InteropServices
-        $cred = [System.Runtime.InteropServices.Marshal]
-        $ptr = [advapi32]::CredRead("${SERVICE_NAME}", 1, 0, [ref]$null)
-        # Fallback: use cmdkey to check existence, then CredRead via .NET
-        $credential = Get-StoredCredential -Target "${SERVICE_NAME}" -ErrorAction SilentlyContinue
-        if ($credential) { Write-Output $credential.GetNetworkCredential().Password }
-      `;
-      // Simpler approach: use PowerShell's built-in credential cmdlets if available,
-      // otherwise use the Windows Credential Manager COM interface
+      // Read from Windows Credential Manager using Win32 CredRead via .NET P/Invoke.
+      // cmdkey can store but can't output passwords, so we use the native API.
+      const psScript = [
+        '$sig = @"',
+        'using System;',
+        'using System.Runtime.InteropServices;',
+        'public class CredHelper {',
+        '  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]',
+        '  public static extern bool CredRead(string target, int type, int flags, out IntPtr cred);',
+        '  [DllImport("advapi32.dll")]',
+        '  public static extern void CredFree(IntPtr cred);',
+        '  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]',
+        '  public struct CREDENTIAL {',
+        '    public int Flags; public int Type;',
+        '    public string TargetName; public string Comment;',
+        '    public long LastWritten; public int CredentialBlobSize;',
+        '    public IntPtr CredentialBlob; public int Persist;',
+        '    public int AttributeCount; public IntPtr Attributes;',
+        '    public string TargetAlias; public string UserName;',
+        '  }',
+        '  public static string GetPassword(string target) {',
+        '    IntPtr ptr;',
+        '    if (!CredRead(target, 1, 0, out ptr)) return null;',
+        '    var cred = (CREDENTIAL)Marshal.PtrToStructure(ptr, typeof(CREDENTIAL));',
+        '    var pass = Marshal.PtrToStringUni(cred.CredentialBlob, cred.CredentialBlobSize/2);',
+        '    CredFree(ptr);',
+        '    return pass;',
+        '  }',
+        '}',
+        '"@',
+        'Add-Type -TypeDefinition $sig -Language CSharp',
+        `$p = [CredHelper]::GetPassword("${SERVICE_NAME}")`,
+        'if ($p) { Write-Output $p }',
+      ].join('\n');
+
       const result = execFileSync('powershell', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        `[void][Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime]; ` +
-        `$vault = New-Object Windows.Security.Credentials.PasswordVault; ` +
-        `$cred = $vault.Retrieve("${SERVICE_NAME}", "${ACCOUNT_NAME}"); ` +
-        `$cred.RetrievePassword(); Write-Output $cred.Password`,
+        '-NoProfile', '-NonInteractive', '-Command', psScript,
       ], { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' });
       return result.trim() || null;
     }
