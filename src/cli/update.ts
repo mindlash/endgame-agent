@@ -1,133 +1,146 @@
 /**
- * Manual-trigger update — checks for new releases and replaces app/ files.
+ * Manual-trigger update — pulls latest source from GitHub and rebuilds.
  *
  * data/ and config/ are never touched during updates.
  * No auto-update (red team recommendation).
  */
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { execFileSync, execSync } from 'node:child_process';
+import { existsSync, mkdirSync, renameSync, rmSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
-import { platform, arch } from 'node:os';
 import { resolveHome } from '../core/config.js';
 import { stopService, startService, getStatus } from './service.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('update');
 
-const GITHUB_REPO = 'endgame-agent/endgame-agent';
-const RELEASE_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const GITHUB_REPO = 'mindlash/endgame-agent';
 
-interface GitHubRelease {
-  tag_name: string;
-  assets: Array<{ name: string; browser_download_url: string }>;
+function getNodePath(): string {
+  const home = resolveHome();
+  const localNode = join(home, 'node', 'bin', 'node');
+  if (existsSync(localNode)) return localNode;
+  // Windows local node
+  const localNodeWin = join(home, 'node', 'node.exe');
+  if (existsSync(localNodeWin)) return localNodeWin;
+  return process.execPath;
 }
 
-function getCurrentVersion(): string {
-  try {
-    const pkg = JSON.parse(
-      execFileSync('node', ['-e', 'process.stdout.write(require("./package.json").version)'], {
-        cwd: resolveHome(),
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }),
-    );
-    return typeof pkg === 'string' ? pkg : '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
+function getNpmCliPath(): string {
+  const home = resolveHome();
+  // Local node's npm (Unix)
+  const localNpm = join(home, 'node', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (existsSync(localNpm)) return localNpm;
+  // Local node's npm (Windows)
+  const localNpmWin = join(home, 'node', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (existsSync(localNpmWin)) return localNpmWin;
+  // System npm
+  return 'npm';
 }
 
-function getPlatformAssetName(): string {
-  const os = platform() === 'darwin' ? 'darwin' : 'win32';
-  const a = arch() === 'arm64' ? 'arm64' : 'x64';
-  return `endgame-agent-${os}-${a}.tar.gz`;
-}
+function runNpm(args: string[], cwd: string): void {
+  const nodePath = getNodePath();
+  const npmCli = getNpmCliPath();
 
-export async function checkForUpdate(): Promise<{ available: boolean; current: string; latest: string }> {
-  const current = getCurrentVersion();
-  try {
-    const res = await fetch(RELEASE_API, {
-      headers: { Accept: 'application/vnd.github.v3+json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) throw new Error(`GitHub API returned ${res.status}`);
-    const release = (await res.json()) as GitHubRelease;
-    const latest = release.tag_name.replace(/^v/, '');
-    return { available: latest !== current, current, latest };
-  } catch (err) {
-    log.warn('Failed to check for updates', { error: err instanceof Error ? err.message : String(err) });
-    return { available: false, current, latest: current };
+  if (npmCli === 'npm') {
+    execSync(`npm ${args.join(' ')}`, { cwd, stdio: 'pipe' });
+  } else {
+    execFileSync(nodePath, [npmCli, ...args], { cwd, stdio: 'pipe' });
   }
 }
 
 export async function performUpdate(): Promise<void> {
-  const { available, current, latest } = await checkForUpdate();
-
-  if (!available) {
-    console.log(`Already on latest version (${current})`);
-    return;
-  }
-
-  console.log(`Update available: ${current} -> ${latest}`);
   const home = resolveHome();
   const appDir = join(home, 'app');
   const backupDir = join(home, 'app.bak');
+  const buildDir = join(home, 'build-tmp');
 
-  // 1. Download the new release
-  const assetName = getPlatformAssetName();
-  const res = await fetch(RELEASE_API, {
-    headers: { Accept: 'application/vnd.github.v3+json' },
-    signal: AbortSignal.timeout(10_000),
-  });
-  const release = (await res.json()) as GitHubRelease;
-  const asset = release.assets.find(a => a.name === assetName);
-  if (!asset) {
-    throw new Error(`No release asset found for ${assetName}. Available: ${release.assets.map(a => a.name).join(', ')}`);
-  }
+  // 1. Download latest source as zip
+  const zipUrl = `https://github.com/${GITHUB_REPO}/archive/refs/heads/main.zip`;
+  console.log('Downloading latest source...');
 
-  console.log(`Downloading ${assetName}...`);
-  const downloadRes = await fetch(asset.browser_download_url, { signal: AbortSignal.timeout(120_000) });
-  if (!downloadRes.ok) throw new Error(`Download failed: HTTP ${downloadRes.status}`);
+  const res = await fetch(zipUrl, { signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
 
-  const tmpFile = join(home, 'update.tar.gz');
+  const tmpZip = join(home, 'update.zip');
   const { writeFileSync } = await import('node:fs');
-  writeFileSync(tmpFile, Buffer.from(await downloadRes.arrayBuffer()));
+  writeFileSync(tmpZip, Buffer.from(await res.arrayBuffer()));
 
-  // 2. Stop service if running
+  // 2. Extract to build directory
+  if (existsSync(buildDir)) rmSync(buildDir, { recursive: true });
+  mkdirSync(buildDir, { recursive: true });
+
+  try {
+    // tar can handle zip on macOS/Linux; Windows has tar since Win10
+    execFileSync('tar', ['-xf', tmpZip, '-C', buildDir, '--strip-components=1'], { stdio: 'pipe' });
+  } catch {
+    // Fallback: try PowerShell Expand-Archive on Windows
+    try {
+      const extractDir = join(buildDir, '_extract');
+      execSync(
+        `powershell -NoProfile -Command "Expand-Archive -Path '${tmpZip}' -DestinationPath '${extractDir}' -Force"`,
+        { stdio: 'pipe' },
+      );
+      // Move contents up (strip the top-level folder)
+      const { readdirSync } = await import('node:fs');
+      const inner = readdirSync(extractDir);
+      const sourceDir = inner.length === 1 ? join(extractDir, inner[0]) : extractDir;
+      cpSync(sourceDir, buildDir, { recursive: true });
+      rmSync(extractDir, { recursive: true, force: true });
+    } catch (err) {
+      rmSync(tmpZip, { force: true });
+      throw new Error(`Extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  rmSync(tmpZip, { force: true });
+
+  // 3. Install dependencies and compile
+  console.log('Installing dependencies...');
+  runNpm(['install', '--ignore-scripts', '--no-audit', '--no-fund'], buildDir);
+
+  console.log('Compiling TypeScript...');
+  const nodePath = getNodePath();
+  const tscBin = join(buildDir, 'node_modules', 'typescript', 'bin', 'tsc');
+  execFileSync(nodePath, [tscBin], { cwd: buildDir, stdio: 'pipe' });
+
+  // 4. Stop service if running
   const status = getStatus();
   if (status.running) {
     console.log('Stopping service...');
     stopService();
-    // Give it a moment to shut down
     await new Promise(r => setTimeout(r, 2000));
   }
 
-  // 3. Backup current app/ and extract new one
+  // 5. Backup current app/ and deploy new one
   if (existsSync(backupDir)) rmSync(backupDir, { recursive: true });
   if (existsSync(appDir)) renameSync(appDir, backupDir);
   mkdirSync(appDir, { recursive: true });
 
   try {
-    execFileSync('tar', ['-xzf', tmpFile, '-C', appDir], { stdio: 'pipe' });
+    // Copy compiled output
+    cpSync(join(buildDir, 'dist'), appDir, { recursive: true });
+    // Copy node_modules (needed at runtime)
+    cpSync(join(buildDir, 'node_modules'), join(appDir, 'node_modules'), { recursive: true });
+    // Copy package.json (version detection)
+    cpSync(join(buildDir, 'package.json'), join(appDir, 'package.json'));
   } catch (err) {
     // Restore backup on failure
     if (existsSync(backupDir)) {
-      rmSync(appDir, { recursive: true });
+      rmSync(appDir, { recursive: true, force: true });
       renameSync(backupDir, appDir);
     }
-    throw new Error(`Extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Deploy failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // 4. Cleanup
-  rmSync(tmpFile, { force: true });
-  if (existsSync(backupDir)) rmSync(backupDir, { recursive: true });
+  // 6. Cleanup
+  rmSync(buildDir, { recursive: true, force: true });
+  if (existsSync(backupDir)) rmSync(backupDir, { recursive: true, force: true });
 
-  // 5. Restart service if it was running
+  // 7. Restart service if it was running
   if (status.running) {
     console.log('Restarting service...');
     startService();
   }
 
-  console.log(`Updated to ${latest}`);
+  console.log('Update complete! Your config and data are unchanged.');
 }
