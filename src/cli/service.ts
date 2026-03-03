@@ -177,6 +177,13 @@ function installWindows(): void {
     `"${nodePath}" "${entryPoint}" run >> "${logFile}" 2>&1`,
   ].join('\r\n') + '\r\n');
 
+  // Create a VBScript launcher that runs the .cmd hidden (no visible window)
+  const vbsPath = join(home, 'bin', 'run-agent.vbs');
+  writeFileSync(vbsPath, [
+    'Set WshShell = CreateObject("WScript.Shell")',
+    `WshShell.Run """${cmdPath}""", 0, False`,
+  ].join('\r\n') + '\r\n');
+
   // Create scheduled task via schtasks
   const xml = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -198,7 +205,8 @@ function installWindows(): void {
   </Settings>
   <Actions>
     <Exec>
-      <Command>${cmdPath}</Command>
+      <Command>wscript.exe</Command>
+      <Arguments>"${vbsPath}"</Arguments>
       <WorkingDirectory>${home}</WorkingDirectory>
     </Exec>
   </Actions>
