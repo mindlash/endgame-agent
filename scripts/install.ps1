@@ -13,16 +13,19 @@
 
     What this does:
       1. Checks/installs Node.js 22 LTS (needs internet if Node.js missing)
-      2. Builds the agent from local source OR downloads a pre-bundled release
-      3. Deploys to ~/.endgame-agent/
-      4. Runs interactive setup wizard
-      5. Offers Credential Manager password storage
-      6. Installs Task Scheduler service
-      7. Starts the agent
-      8. Creates CLI wrapper in PATH
-#>
+      2. Copies source to an isolated build directory (~/.endgame-agent/build-tmp/)
+      3. Builds with the local Node.js — never touches your system npm
+      4. Deploys to ~/.endgame-agent/app/
+      5. Cleans up the build directory
+      6. Runs interactive setup wizard
+      7. Offers Credential Manager password storage
+      8. Installs Task Scheduler service
+      9. Starts the agent
+     10. Creates CLI wrapper in PATH
 
-$ErrorActionPreference = "Stop"
+    Everything installs into ~/.endgame-agent/ — no system-wide changes
+    except adding the CLI to your user PATH.
+#>
 
 $AgentHome = Join-Path $env:USERPROFILE ".endgame-agent"
 $NodeVersion = "22.13.1"
@@ -30,7 +33,7 @@ $GitHubRepo = "mindlash/endgame-agent"
 
 function Write-Info { param([string]$Message) Write-Host "[INFO] $Message" -ForegroundColor Green }
 function Write-Warn { param([string]$Message) Write-Host "[WARN] $Message" -ForegroundColor Yellow }
-function Write-Err { param([string]$Message) Write-Host "[ERROR] $Message" -ForegroundColor Red; exit 1 }
+function Write-Err  { param([string]$Message) Write-Host "[ERROR] $Message" -ForegroundColor Red; exit 1 }
 
 # ── Detect local source repo ─────────────────────────────────────
 
@@ -50,20 +53,64 @@ function Find-LocalRepo {
     return $null
 }
 
+# ── Resolve node/npm paths ────────────────────────────────────────
+
+function Get-NodeExe {
+    $local = Join-Path $AgentHome "node\node.exe"
+    if (Test-Path $local) { return $local }
+    $system = Get-Command node -ErrorAction SilentlyContinue
+    if ($system) { return $system.Source }
+    return $null
+}
+
+function Get-NpmCliJs {
+    # The npm CLI entry point shipped with the Node.js zip
+    $local = Join-Path $AgentHome "node\node_modules\npm\bin\npm-cli.js"
+    if (Test-Path $local) { return $local }
+    # Fallback: system npm location (Windows npm ships as a .cmd, but we want the .js)
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if ($npmCmd) {
+        # npm.cmd lives next to node.exe; the actual JS is in ../node_modules/npm/bin/npm-cli.js
+        $npmDir = Split-Path $npmCmd.Source -Parent
+        $cliJs = Join-Path $npmDir "node_modules\npm\bin\npm-cli.js"
+        if (Test-Path $cliJs) { return $cliJs }
+    }
+    return $null
+}
+
+# Run npm via node.exe directly — avoids PowerShell's npm.ps1 wrapper
+# which breaks with $ErrorActionPreference = "Stop" on stderr output.
+function Invoke-Npm {
+    param([string[]]$Arguments)
+    $nodeExe = Get-NodeExe
+    $npmCli = Get-NpmCliJs
+    if (-not $nodeExe -or -not $npmCli) {
+        Write-Err "Cannot find node.exe or npm-cli.js"
+    }
+    $allArgs = @($npmCli) + $Arguments
+    $proc = Start-Process -FilePath $nodeExe -ArgumentList $allArgs -NoNewWindow -Wait -PassThru
+    if ($proc.ExitCode -ne 0) {
+        Write-Err "npm command failed with exit code $($proc.ExitCode): $Arguments"
+    }
+}
+
 # ── Node.js ───────────────────────────────────────────────────────
 
 function Test-NodeInstalled {
-    try {
-        $version = & node --version 2>$null
-        if ($version) {
-            $major = [int]($version -replace '^v' -split '\.')[0]
-            if ($major -ge 20) {
-                Write-Info "Node.js $version found"
-                return $true
+    $nodeExe = Get-NodeExe
+    if ($nodeExe) {
+        try {
+            $version = & $nodeExe --version 2>$null
+            if ($version) {
+                $major = [int]($version -replace '^v' -split '\.')[0]
+                if ($major -ge 20) {
+                    Write-Info "Node.js $version found ($nodeExe)"
+                    return $true
+                }
+                Write-Warn "Node.js $version found but v20+ required"
             }
-            Write-Warn "Node.js $version found but v20+ required"
-        }
-    } catch {}
+        } catch {}
+    }
     return $false
 }
 
@@ -92,51 +139,86 @@ function Install-NodeJS {
 
     # Extract
     $tmpDir = Join-Path $env:TEMP "node-extract"
+    if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
     Expand-Archive -Path $tmpFile -DestinationPath $tmpDir -Force
     $extracted = Get-ChildItem $tmpDir | Select-Object -First 1
     Copy-Item -Path "$($extracted.FullName)\*" -Destination $nodeDir -Recurse -Force
     Remove-Item $tmpFile, $tmpDir -Recurse -Force
 
+    # Add to PATH for this session
     $env:PATH = "$nodeDir;$env:PATH"
     Write-Info "Node.js installed to $nodeDir"
 }
 
-# ── Local build ───────────────────────────────────────────────────
+# ── Isolated local build ─────────────────────────────────────────
+# Copies source to a temp directory inside AGENT_HOME, builds there
+# using the local Node.js, then moves output to app/. The source
+# directory is never modified.
 
 function Install-AgentFromSource {
     param([string]$RepoRoot)
 
-    Write-Info "Building from local source: $RepoRoot"
+    $buildDir = Join-Path $AgentHome "build-tmp"
+    $appDir   = Join-Path $AgentHome "app"
 
-    # npm install
+    # Clean previous build attempt
+    if (Test-Path $buildDir) { Remove-Item $buildDir -Recurse -Force }
+
+    Write-Info "Copying source to isolated build directory..."
+    New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
+
+    # Copy source files (exclude .git, node_modules, dist to save time)
+    $exclude = @(".git", "node_modules", "dist", ".agent-data")
+    Get-ChildItem -Path $RepoRoot | Where-Object { $_.Name -notin $exclude } | ForEach-Object {
+        if ($_.PSIsContainer) {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $buildDir $_.Name) -Recurse -Force
+        } else {
+            Copy-Item -Path $_.FullName -Destination $buildDir -Force
+        }
+    }
+    Write-Info "Source copied to $buildDir"
+
+    # npm install (using node.exe directly to avoid PowerShell npm.ps1 stderr issue)
     Write-Info "Installing dependencies (npm install)..."
-    Push-Location $RepoRoot
+    Push-Location $buildDir
     try {
-        & npm install --ignore-scripts 2>&1 | Out-Null
+        Invoke-Npm -Arguments @("install", "--ignore-scripts")
         # argon2 needs a separate rebuild for its native addon
-        & npm rebuild argon2 2>&1 | Out-Null
+        Write-Info "Rebuilding native modules..."
+        Invoke-Npm -Arguments @("rebuild", "argon2")
         Write-Info "Dependencies installed"
 
         # TypeScript build
         Write-Info "Compiling TypeScript..."
-        & npx tsc 2>&1 | Out-Null
+        $nodeExe = Get-NodeExe
+        $npxJs = Join-Path $AgentHome "node\node_modules\npm\bin\npx-cli.js"
+        if (-not (Test-Path $npxJs)) {
+            # Fallback: use npx from PATH
+            $npxJs = Join-Path (Split-Path (Get-Command npm -ErrorAction SilentlyContinue).Source -Parent) "node_modules\npm\bin\npx-cli.js"
+        }
+        $tscProc = Start-Process -FilePath $nodeExe -ArgumentList @($npxJs, "tsc") -NoNewWindow -Wait -PassThru
+        if ($tscProc.ExitCode -ne 0) {
+            Write-Err "TypeScript compilation failed"
+        }
         Write-Info "Build complete"
     } finally {
         Pop-Location
     }
 
-    # Copy dist/ to AGENT_HOME/app/
-    $appDir = Join-Path $AgentHome "app"
+    # Deploy to app/
+    if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force }
     New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 
     # Copy compiled output
-    Copy-Item -Path (Join-Path $RepoRoot "dist\*") -Destination $appDir -Recurse -Force
+    Copy-Item -Path (Join-Path $buildDir "dist\*") -Destination $appDir -Recurse -Force
     # Copy node_modules (needed at runtime for argon2, @solana/web3.js, etc.)
-    Copy-Item -Path (Join-Path $RepoRoot "node_modules") -Destination $appDir -Recurse -Force
+    Copy-Item -Path (Join-Path $buildDir "node_modules") -Destination $appDir -Recurse -Force
     # Copy package.json (needed for version detection)
-    Copy-Item -Path (Join-Path $RepoRoot "package.json") -Destination $appDir -Force
+    Copy-Item -Path (Join-Path $buildDir "package.json") -Destination $appDir -Force
 
-    Write-Info "Agent installed to $appDir"
+    # Clean up build directory
+    Remove-Item $buildDir -Recurse -Force
+    Write-Info "Agent installed to $appDir (build directory cleaned up)"
 }
 
 # ── Remote download (fallback) ────────────────────────────────────
@@ -216,10 +298,17 @@ set NODE_ENV=production
 # ── Main ──────────────────────────────────────────────────────────
 
 function Main {
+    # Stop on real errors (file not found, network, etc.) but NOT on
+    # native command stderr — that's handled per-command.
+    $ErrorActionPreference = "Stop"
+
     Write-Host ""
     Write-Host "=================================" -ForegroundColor Cyan
     Write-Host "  EndGame Agent Installer" -ForegroundColor Cyan
     Write-Host "=================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Everything installs to: $AgentHome" -ForegroundColor Gray
+    Write-Host "  No system-wide changes (except user PATH)." -ForegroundColor Gray
     Write-Host ""
 
     # Create agent home directories

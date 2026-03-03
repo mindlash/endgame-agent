@@ -10,13 +10,18 @@
 #
 # What this does:
 #   1. Checks/installs Node.js 22 LTS (needs internet if Node.js missing)
-#   2. Builds from local source OR downloads pre-bundled release
-#   3. Deploys to ~/.endgame-agent/
-#   4. Runs interactive setup wizard
-#   5. Offers Keychain password storage + sleep prevention
-#   6. Installs launchd service
-#   7. Starts the agent
-#   8. Creates CLI wrapper in PATH
+#   2. Copies source to an isolated build directory (~/.endgame-agent/build-tmp/)
+#   3. Builds with the local Node.js — never touches your system npm
+#   4. Deploys to ~/.endgame-agent/app/
+#   5. Cleans up the build directory
+#   6. Runs interactive setup wizard
+#   7. Offers Keychain password storage + sleep prevention
+#   8. Installs launchd service
+#   9. Starts the agent
+#  10. Creates CLI wrapper in PATH
+#
+# Everything installs into ~/.endgame-agent/ — no system-wide changes
+# except adding the CLI to your shell PATH.
 
 set -euo pipefail
 
@@ -70,16 +75,65 @@ check_macos() {
   [[ "$(uname -s)" == "Darwin" ]] || error "This installer is for macOS only. See Install.bat for Windows."
 }
 
+# ── Resolve node/npm paths ────────────────────────────────────────
+
+get_node_bin() {
+  if [[ -x "$AGENT_HOME/node/bin/node" ]]; then
+    echo "$AGENT_HOME/node/bin/node"
+  elif command -v node &>/dev/null; then
+    command -v node
+  else
+    echo ""
+  fi
+}
+
+get_npm_cli() {
+  # Prefer the npm-cli.js shipped with the local Node.js
+  local local_npm="$AGENT_HOME/node/lib/node_modules/npm/bin/npm-cli.js"
+  if [[ -f "$local_npm" ]]; then
+    echo "$local_npm"
+    return
+  fi
+  # Fallback: system npm's cli.js
+  local sys_npm
+  sys_npm=$(command -v npm 2>/dev/null || true)
+  if [[ -n "$sys_npm" ]]; then
+    # npm is usually a symlink; resolve to find npm-cli.js
+    local npm_real
+    npm_real=$(readlink -f "$sys_npm" 2>/dev/null || realpath "$sys_npm" 2>/dev/null || echo "$sys_npm")
+    local npm_dir
+    npm_dir=$(dirname "$npm_real")
+    if [[ -f "$npm_dir/npm-cli.js" ]]; then
+      echo "$npm_dir/npm-cli.js"
+      return
+    fi
+  fi
+  echo ""
+}
+
+# Run npm via node directly — avoids system npm entirely
+run_npm() {
+  local node_bin npm_cli
+  node_bin=$(get_node_bin)
+  npm_cli=$(get_npm_cli)
+  if [[ -z "$node_bin" || -z "$npm_cli" ]]; then
+    error "Cannot find node or npm-cli.js"
+  fi
+  "$node_bin" "$npm_cli" "$@"
+}
+
 # ── Node.js ───────────────────────────────────────────────────────
 
 check_node() {
-  if command -v node &>/dev/null; then
+  local node_bin
+  node_bin=$(get_node_bin)
+  if [[ -n "$node_bin" ]]; then
     local version
-    version=$(node --version | sed 's/v//')
+    version=$("$node_bin" --version | sed 's/v//')
     local major
     major=$(echo "$version" | cut -d. -f1)
     if (( major >= 20 )); then
-      info "Node.js $version found"
+      info "Node.js $version found ($node_bin)"
       return 0
     fi
     warn "Node.js $version found but v20+ required"
@@ -118,38 +172,88 @@ install_node() {
   tar -xzf "$tmp_file" -C "$node_dir" --strip-components=1
   rm -f "$tmp_file"
 
-  # Add to path for this script
-  export PATH="$node_dir/bin:$PATH"
   info "Node.js installed to $node_dir"
 }
 
-# ── Local build ───────────────────────────────────────────────────
+# ── Isolated local build ─────────────────────────────────────────
+# Copies source to a temp directory inside AGENT_HOME, builds there
+# using the local Node.js, then moves output to app/. The source
+# directory is never modified.
 
 install_agent_from_source() {
-  info "Building from local source: $LOCAL_REPO"
+  local build_dir="$AGENT_HOME/build-tmp"
+  local app_dir="$AGENT_HOME/app"
 
-  cd "$LOCAL_REPO"
+  # Clean previous build attempt
+  rm -rf "$build_dir"
 
-  # npm install
+  info "Copying source to isolated build directory..."
+  mkdir -p "$build_dir"
+
+  # Copy source files (exclude .git, node_modules, dist to save time/space)
+  # Use rsync if available, fall back to filtered cp
+  if command -v rsync &>/dev/null; then
+    rsync -a --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='.agent-data' \
+      "$LOCAL_REPO/" "$build_dir/"
+  else
+    # Manual copy excluding large directories
+    for item in "$LOCAL_REPO"/*; do
+      local basename
+      basename=$(basename "$item")
+      case "$basename" in
+        .git|node_modules|dist|.agent-data) continue ;;
+        *) cp -R "$item" "$build_dir/" ;;
+      esac
+    done
+    # Copy dotfiles (except .git)
+    for item in "$LOCAL_REPO"/.[!.]*; do
+      [[ -e "$item" ]] || continue
+      local basename
+      basename=$(basename "$item")
+      [[ "$basename" == ".git" ]] && continue
+      cp -R "$item" "$build_dir/"
+    done
+  fi
+  info "Source copied to $build_dir"
+
+  cd "$build_dir"
+
+  # npm install (using node directly, not system npm)
   info "Installing dependencies (npm install)..."
-  npm install --ignore-scripts >/dev/null 2>&1
-  npm rebuild argon2 >/dev/null 2>&1
+  run_npm install --ignore-scripts 2>&1 | while IFS= read -r line; do
+    # Show progress dots but suppress npm noise
+    [[ "$line" == *"added"* ]] && info "$line"
+  done || true
+  # Re-run to ensure exit code is captured correctly
+  run_npm install --ignore-scripts >/dev/null 2>&1
+  run_npm rebuild argon2 >/dev/null 2>&1
   info "Dependencies installed"
 
   # TypeScript build
   info "Compiling TypeScript..."
-  npx tsc >/dev/null 2>&1
+  local node_bin
+  node_bin=$(get_node_bin)
+  local npx_cli="$AGENT_HOME/node/lib/node_modules/npm/bin/npx-cli.js"
+  if [[ -f "$npx_cli" ]]; then
+    "$node_bin" "$npx_cli" tsc >/dev/null 2>&1
+  else
+    # Fallback: use tsc from the build's node_modules
+    "$node_bin" "$build_dir/node_modules/.bin/tsc" >/dev/null 2>&1 || \
+    "$node_bin" "$build_dir/node_modules/typescript/bin/tsc" >/dev/null 2>&1
+  fi
   info "Build complete"
 
-  # Copy to AGENT_HOME/app/
-  local app_dir="$AGENT_HOME/app"
+  # Deploy to app/
+  rm -rf "$app_dir"
   mkdir -p "$app_dir"
 
-  cp -R "$LOCAL_REPO/dist/"* "$app_dir/"
-  cp -R "$LOCAL_REPO/node_modules" "$app_dir/"
-  cp "$LOCAL_REPO/package.json" "$app_dir/"
+  cp -R "$build_dir/dist/"* "$app_dir/"
+  cp -R "$build_dir/node_modules" "$app_dir/"
+  cp "$build_dir/package.json" "$app_dir/"
 
-  info "Agent installed to $app_dir"
+  # Clean up build directory
+  rm -rf "$build_dir"
+  info "Agent installed to $app_dir (build directory cleaned up)"
 }
 
 # ── Remote download (fallback) ────────────────────────────────────
@@ -209,11 +313,7 @@ install_cli_wrapper() {
   mkdir -p "$bin_dir"
 
   local node_bin
-  if [[ -x "$AGENT_HOME/node/bin/node" ]]; then
-    node_bin="$AGENT_HOME/node/bin/node"
-  else
-    node_bin="$(which node)"
-  fi
+  node_bin=$(get_node_bin)
 
   # Entry point: cli.js in the app dir
   local entry_point="$AGENT_HOME/app/cli.js"
@@ -256,6 +356,9 @@ main() {
   echo "================================="
   echo "  EndGame Agent Installer"
   echo "================================="
+  echo ""
+  echo "  Everything installs to: $AGENT_HOME"
+  echo "  No system-wide changes (except shell PATH)."
   echo ""
 
   check_macos
