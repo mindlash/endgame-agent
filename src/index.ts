@@ -46,19 +46,23 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Signer helpers ─────────────────────────────────────────────────
 
-function spawnSigner(keyfilePath: string): ChildProcess {
+function spawnSigner(keyfilePath: string, usePermissions = true): ChildProcess {
   const signerPath = join(__dirname, 'security', 'signer.js');
   const dataDir = resolveDataDir();
-  const execArgv = [
-    '--experimental-permission',
-    `--allow-fs-read=${signerPath},${dataDir},${keyfilePath}`,
-  ];
-  try {
-    return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], execArgv });
-  } catch {
-    log.error('Node.js permission model unavailable — signer will run without network restriction');
-    return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+
+  if (usePermissions) {
+    const execArgv = [
+      '--experimental-permission',
+      `--allow-fs-read=${signerPath},${dataDir},${keyfilePath}`,
+    ];
+    try {
+      return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'], execArgv });
+    } catch {
+      log.warn('Node.js permission model unavailable — signer will run without network restriction');
+    }
   }
+
+  return fork(signerPath, [], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
 }
 
 function waitForMessage(proc: ChildProcess, expectedType: string, timeoutMs = 15_000): Promise<void> {
@@ -71,8 +75,17 @@ function waitForMessage(proc: ChildProcess, expectedType: string, timeoutMs = 15
       if (msg.type === expectedType) { cleanup(); resolve(); }
       else if (msg.type === 'error') { cleanup(); reject(new Error(msg.message ?? 'Signer error')); }
     };
-    const cleanup = () => { clearTimeout(timer); proc.removeListener('message', onMsg); };
+    const onExit = (code: number | null) => {
+      cleanup();
+      reject(new Error(`Signer process exited unexpectedly (code ${code})`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      proc.removeListener('message', onMsg);
+      proc.removeListener('exit', onExit);
+    };
     proc.on('message', onMsg);
+    proc.on('exit', onExit);
   });
 }
 
@@ -134,8 +147,15 @@ async function main(): Promise<void> {
 
   // Claim subsystem
   if (config.claimEnabled) {
-    signerProc = spawnSigner(config.encryptedKeyPath);
-    await waitForMessage(signerProc, 'ready');
+    // Try with --experimental-permission first; fall back to unrestricted on failure
+    signerProc = spawnSigner(config.encryptedKeyPath, true);
+    try {
+      await waitForMessage(signerProc, 'ready');
+    } catch {
+      log.warn('Signer failed with permission model — retrying without restrictions');
+      signerProc = spawnSigner(config.encryptedKeyPath, false);
+      await waitForMessage(signerProc, 'ready');
+    }
 
     // Try credential store first, then fall back to env var
     let password = process.env['KEYFILE_PASSWORD'];
