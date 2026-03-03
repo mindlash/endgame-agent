@@ -42,7 +42,14 @@ switch (command) {
     const { execFileSync } = await import('node:child_process');
     const lines = process.argv[3] ?? '50';
     try {
-      execFileSync('tail', ['-f', '-n', lines, logPath], { stdio: 'inherit' });
+      if (process.platform === 'win32') {
+        execFileSync('powershell', [
+          '-NoProfile', '-Command',
+          `Get-Content -Path '${logPath}' -Tail ${lines} -Wait`,
+        ], { stdio: 'inherit' });
+      } else {
+        execFileSync('tail', ['-f', '-n', lines, logPath], { stdio: 'inherit' });
+      }
     } catch {
       // User pressed Ctrl+C
     }

@@ -20,7 +20,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { decryptKey, signMessage, type EncryptedKeyfile } from './keystore.js';
 
 interface UnlockMessage { type: 'unlock'; password: string; keyfilePath: string }
@@ -230,7 +230,7 @@ function validateKeyfilePath(path: string): string {
     : [resolve(process.cwd(), '.agent-data'), resolve(process.cwd(), 'data')];
 
   const inAllowed = allowedDirs.some(dir =>
-    resolved.startsWith(dir + '/') || resolved === dir,
+    resolved.startsWith(dir + sep) || resolved === dir,
   );
 
   if (!inAllowed) {
