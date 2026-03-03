@@ -272,54 +272,34 @@ install_agent_from_source() {
   info "Agent installed to $app_dir (build directory cleaned up)"
 }
 
-# ── Remote download (fallback) ────────────────────────────────────
+# ── Remote source download + build ────────────────────────────────
 
 download_agent_from_github() {
-  local arch
-  arch=$(detect_arch)
-  local asset_name="endgame-agent-darwin-${arch}.tar.gz"
-  local checksum_name="endgame-agent-darwin-${arch}.tar.gz.sha256"
+  local zip_url="https://github.com/${GITHUB_REPO}/archive/refs/heads/main.zip"
+  local tmp_zip
+  tmp_zip=$(mktemp)
+  local extract_dir
+  extract_dir=$(mktemp -d)
 
-  info "Fetching latest release from GitHub..."
-  local release_json
-  release_json=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest")
+  info "Downloading source from GitHub..."
+  curl -fsSL "$zip_url" -o "$tmp_zip"
 
-  local download_url
-  download_url=$(echo "$release_json" | grep -o "\"browser_download_url\": *\"[^\"]*${asset_name}\"" | cut -d'"' -f4)
+  # Extract zip
+  unzip -q "$tmp_zip" -d "$extract_dir"
+  rm -f "$tmp_zip"
 
-  if [[ -z "$download_url" ]]; then
-    error "Could not find release asset: $asset_name"
+  # Find the extracted repo folder (e.g., endgame-agent-main/)
+  local inner_dir
+  inner_dir=$(find "$extract_dir" -mindepth 1 -maxdepth 1 -type d | head -1)
+  if [[ -z "$inner_dir" ]]; then
+    error "Extraction produced no files"
   fi
 
-  local checksum_url
-  checksum_url=$(echo "$release_json" | grep -o "\"browser_download_url\": *\"[^\"]*${checksum_name}\"" | cut -d'"' -f4)
+  info "Source downloaded, building..."
+  build_agent_from_source "$inner_dir"
 
-  # Download
-  local tmp_file
-  tmp_file=$(mktemp)
-  info "Downloading $asset_name..."
-  curl -fsSL "$download_url" -o "$tmp_file"
-
-  # Verify SHA-256 if checksum file available
-  if [[ -n "$checksum_url" ]]; then
-    local expected_hash
-    expected_hash=$(curl -fsSL "$checksum_url" | awk '{print $1}')
-    local actual_hash
-    actual_hash=$(shasum -a 256 "$tmp_file" | awk '{print $1}')
-    if [[ "$expected_hash" != "$actual_hash" ]]; then
-      rm -f "$tmp_file"
-      error "SHA-256 verification failed for agent download"
-    fi
-    info "SHA-256 verified"
-  else
-    warn "No checksum file found — skipping verification"
-  fi
-
-  # Extract
-  mkdir -p "$AGENT_HOME/app"
-  tar -xzf "$tmp_file" -C "$AGENT_HOME/app"
-  rm -f "$tmp_file"
-  info "Agent extracted to $AGENT_HOME/app/"
+  # Clean up
+  rm -rf "$extract_dir"
 }
 
 # ── CLI wrapper ───────────────────────────────────────────────────
@@ -399,10 +379,15 @@ main() {
   # 3. Install CLI wrapper
   install_cli_wrapper
 
-  # 4. Run setup wizard
-  info "Starting setup wizard..."
+  # 4. Run setup wizard (skip if already configured)
   export AGENT_HOME
-  endgame-agent setup
+  if [[ -f "$AGENT_HOME/config/.env" ]]; then
+    info "Existing config found — skipping setup wizard"
+    info "Run 'endgame-agent setup' to reconfigure"
+  else
+    info "Starting setup wizard..."
+    endgame-agent setup
+  fi
 
   # 5. Start service (only if setup installed one)
   local plist_path="$HOME/Library/LaunchAgents/cash.endgame.agent.plist"

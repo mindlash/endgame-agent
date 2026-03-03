@@ -248,45 +248,30 @@ function Install-AgentFromSource {
     Write-Info "Agent installed to $appDir (build directory cleaned up)"
 }
 
-# ── Remote download (fallback) ────────────────────────────────────
+# ── Remote source download + build ────────────────────────────────
 
 function Install-AgentFromGitHub {
-    $assetName = "endgame-agent-win32-x64.tar.gz"
-    $checksumName = "$assetName.sha256"
+    $zipUrl = "https://github.com/${GitHubRepo}/archive/refs/heads/main.zip"
+    $tmpZip = Join-Path $env:TEMP "endgame-agent-source.zip"
+    $extractDir = Join-Path $env:TEMP "endgame-agent-extract"
 
-    Write-Info "Fetching latest release from GitHub..."
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/${GitHubRepo}/releases/latest" -UseBasicParsing
+    Write-Info "Downloading source from GitHub..."
+    Invoke-WebRequest -Uri $zipUrl -OutFile $tmpZip -UseBasicParsing
 
-    $asset = $release.assets | Where-Object { $_.name -eq $assetName }
-    if (-not $asset) {
-        Write-Err "Could not find release asset: $assetName. Available: $($release.assets.name -join ', ')"
-    }
+    # Extract zip
+    if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+    Expand-Archive -Path $tmpZip -DestinationPath $extractDir -Force
+    Remove-Item $tmpZip -Force
 
-    $checksumAsset = $release.assets | Where-Object { $_.name -eq $checksumName }
+    # Find the extracted repo folder (e.g., endgame-agent-main/)
+    $innerDir = Get-ChildItem $extractDir | Select-Object -First 1
+    if (-not $innerDir) { Write-Err "Extraction produced no files" }
 
-    $tmpFile = Join-Path $env:TEMP "endgame-agent.tar.gz"
-    Write-Info "Downloading $assetName..."
-    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tmpFile -UseBasicParsing
+    Write-Info "Source downloaded, building..."
+    Install-AgentFromSource -RepoRoot $innerDir.FullName
 
-    # Verify SHA-256
-    if ($checksumAsset) {
-        $expectedHash = ((Invoke-WebRequest -Uri $checksumAsset.browser_download_url -UseBasicParsing).Content -split '\s+')[0]
-        $actualHash = (Get-FileHash -Path $tmpFile -Algorithm SHA256).Hash.ToLower()
-        if ($expectedHash -ne $actualHash) {
-            Remove-Item $tmpFile -Force
-            Write-Err "SHA-256 verification failed for agent download"
-        }
-        Write-Info "SHA-256 verified"
-    } else {
-        Write-Warn "No checksum file found - skipping verification"
-    }
-
-    # Extract (tar is available on Windows 10+)
-    $appDir = Join-Path $AgentHome "app"
-    New-Item -ItemType Directory -Path $appDir -Force | Out-Null
-    & tar -xzf $tmpFile -C $appDir
-    Remove-Item $tmpFile -Force
-    Write-Info "Agent extracted to $appDir"
+    # Clean up extract directory
+    Remove-Item $extractDir -Recurse -Force
 }
 
 # ── CLI wrapper ───────────────────────────────────────────────────
@@ -361,10 +346,16 @@ function Main {
     # 3. Install CLI wrapper
     Install-CliWrapper
 
-    # 4. Run setup wizard
-    Write-Info "Starting setup wizard..."
+    # 4. Run setup wizard (skip if already configured)
     $env:AGENT_HOME = $AgentHome
-    & endgame-agent setup
+    $envFile = Join-Path $AgentHome "config\.env"
+    if (Test-Path $envFile) {
+        Write-Info "Existing config found — skipping setup wizard"
+        Write-Info "Run 'endgame-agent setup' to reconfigure"
+    } else {
+        Write-Info "Starting setup wizard..."
+        & endgame-agent setup
+    }
 
     # 5. Start service (only if setup installed one)
     try {
