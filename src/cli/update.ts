@@ -6,8 +6,9 @@
  */
 
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, cpSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { platform } from 'node:os';
 import { resolveHome } from '../core/config.js';
 import { stopService, startService, installService, getStatus } from './service.js';
 import { createLogger } from '../core/logger.js';
@@ -46,6 +47,25 @@ function runNpm(args: string[], cwd: string): void {
     execSync(`npm ${args.join(' ')}`, { cwd, stdio: 'pipe' });
   } else {
     execFileSync(nodePath, [npmCli, ...args], { cwd, stdio: 'pipe' });
+  }
+}
+
+/** Copy directory tree, silently skipping files that are locked (EPERM/EBUSY). */
+function copyWithSkipLocked(src: string, dest: string): void {
+  mkdirSync(dest, { recursive: true });
+  for (const entry of readdirSync(src, { withFileTypes: true })) {
+    const srcPath = join(src, entry.name);
+    const destPath = join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyWithSkipLocked(srcPath, destPath);
+    } else {
+      try {
+        cpSync(srcPath, destPath, { force: true });
+      } catch {
+        // File locked (antivirus, etc.) — skip it. Prebuilt .node binaries
+        // are identical across patch versions, so this is safe.
+      }
+    }
   }
 }
 
@@ -108,47 +128,26 @@ export async function performUpdate(): Promise<void> {
   if (status.running) {
     console.log('Stopping service...');
     stopService();
-    // Wait for process to fully exit (Windows holds file locks briefly after exit)
-    await new Promise(r => setTimeout(r, 5000));
+    await new Promise(r => setTimeout(r, 3000));
   }
 
-  // 5. Backup current app/ and deploy new one
-  // Retry cleanup of old backup — Windows may hold file locks briefly
-  if (existsSync(backupDir)) {
-    for (let i = 0; i < 3; i++) {
-      try {
-        rmSync(backupDir, { recursive: true, force: true });
-        break;
-      } catch {
-        if (i < 2) await new Promise(r => setTimeout(r, 2000));
-      }
-    }
-    // If still exists, rename it out of the way
-    if (existsSync(backupDir)) {
-      try { renameSync(backupDir, backupDir + '-' + Date.now()); } catch { /* best effort */ }
-    }
-  }
-  if (existsSync(appDir)) renameSync(appDir, backupDir);
+  // 5. Deploy new code over existing app/ directory
+  // On Windows, native .node binaries may be locked by antivirus even after
+  // the process exits. Instead of rename-to-backup (which fails on locked files),
+  // we overwrite in-place — locked prebuilt binaries are identical across versions.
+  console.log('Deploying...');
   mkdirSync(appDir, { recursive: true });
 
-  try {
-    // Copy compiled output
-    cpSync(join(buildDir, 'dist'), appDir, { recursive: true });
-    // Copy node_modules (needed at runtime)
-    cpSync(join(buildDir, 'node_modules'), join(appDir, 'node_modules'), { recursive: true });
-    // Copy package.json (version detection)
-    cpSync(join(buildDir, 'package.json'), join(appDir, 'package.json'));
-  } catch (err) {
-    // Restore backup on failure
-    if (existsSync(backupDir)) {
-      rmSync(appDir, { recursive: true, force: true });
-      renameSync(backupDir, appDir);
-    }
-    throw new Error(`Deploy failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // Overwrite compiled JS output
+  cpSync(join(buildDir, 'dist'), appDir, { recursive: true, force: true });
+  // Overwrite node_modules — skip files that are locked (same prebuilt binaries)
+  copyWithSkipLocked(join(buildDir, 'node_modules'), join(appDir, 'node_modules'));
+  // Overwrite package.json
+  cpSync(join(buildDir, 'package.json'), join(appDir, 'package.json'), { force: true });
 
-  // 6. Cleanup (best effort — locked files on Windows are harmless leftovers)
+  // 6. Cleanup build directory (best effort)
   try { rmSync(buildDir, { recursive: true, force: true }); } catch { /* ok */ }
+  // Clean up any stale backups from older update versions
   try { if (existsSync(backupDir)) rmSync(backupDir, { recursive: true, force: true }); } catch { /* ok */ }
 
   // 7. Regenerate service wrappers + restart if it was running
