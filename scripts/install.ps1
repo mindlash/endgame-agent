@@ -80,6 +80,8 @@ function Get-NpmCliJs {
 
 # Run npm via node.exe directly — avoids PowerShell's npm.ps1 wrapper
 # which breaks with $ErrorActionPreference = "Stop" on stderr output.
+# Uses & (call operator) instead of Start-Process so that child processes
+# (like node-gyp-build) properly inherit the current $env:PATH.
 function Invoke-Npm {
     param([string[]]$Arguments)
     $nodeExe = Get-NodeExe
@@ -87,10 +89,13 @@ function Invoke-Npm {
     if (-not $nodeExe -or -not $npmCli) {
         Write-Err "Cannot find node.exe or npm-cli.js"
     }
-    $allArgs = @($npmCli) + $Arguments
-    $proc = Start-Process -FilePath $nodeExe -ArgumentList $allArgs -NoNewWindow -Wait -PassThru
-    if ($proc.ExitCode -ne 0) {
-        Write-Err "npm command failed with exit code $($proc.ExitCode): $Arguments"
+    # Temporarily suppress stderr-as-error so npm "notice" output doesn't terminate
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & $nodeExe $npmCli @Arguments
+    $ErrorActionPreference = $prevPref
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "npm command failed with exit code ${LASTEXITCODE}: $Arguments"
     }
 }
 
@@ -188,16 +193,18 @@ function Install-AgentFromSource {
         Invoke-Npm -Arguments @("rebuild", "argon2")
         Write-Info "Dependencies installed"
 
-        # TypeScript build
+        # TypeScript build — use tsc from the build's own node_modules
         Write-Info "Compiling TypeScript..."
         $nodeExe = Get-NodeExe
-        $npxJs = Join-Path $AgentHome "node\node_modules\npm\bin\npx-cli.js"
-        if (-not (Test-Path $npxJs)) {
-            # Fallback: use npx from PATH
-            $npxJs = Join-Path (Split-Path (Get-Command npm -ErrorAction SilentlyContinue).Source -Parent) "node_modules\npm\bin\npx-cli.js"
+        $tscBin = Join-Path $buildDir "node_modules\typescript\bin\tsc"
+        if (-not (Test-Path $tscBin)) {
+            $tscBin = Join-Path $buildDir "node_modules\.bin\tsc"
         }
-        $tscProc = Start-Process -FilePath $nodeExe -ArgumentList @($npxJs, "tsc") -NoNewWindow -Wait -PassThru
-        if ($tscProc.ExitCode -ne 0) {
+        $prevPref = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
+        & $nodeExe $tscBin
+        $ErrorActionPreference = $prevPref
+        if ($LASTEXITCODE -ne 0) {
             Write-Err "TypeScript compilation failed"
         }
         Write-Info "Build complete"
