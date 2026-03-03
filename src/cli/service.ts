@@ -181,7 +181,7 @@ function installWindows(): void {
   const vbsPath = join(home, 'bin', 'run-agent.vbs');
   writeFileSync(vbsPath, [
     'Set WshShell = CreateObject("WScript.Shell")',
-    `WshShell.Run """${cmdPath}""", 0, False`,
+    `WshShell.Run """${cmdPath}""", 0, True`,
   ].join('\r\n') + '\r\n');
 
   // Create scheduled task via schtasks
