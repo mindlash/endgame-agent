@@ -223,6 +223,10 @@ function uninstallWindows(): void {
 }
 
 function startWindows(): void {
+  const status = getStatusWindows();
+  if (!status.installed) {
+    throw new Error('Service not installed. Run `endgame-agent setup` first and choose "Install as background service".');
+  }
   execFileSync('schtasks', ['/Run', '/TN', TASK_NAME], { stdio: 'pipe' });
   log.info('Service started via Task Scheduler');
 }

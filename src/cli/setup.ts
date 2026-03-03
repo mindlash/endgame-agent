@@ -29,20 +29,38 @@ export async function setup(): Promise<void> {
 
   mkdirSync(DATA_DIR, { recursive: true });
 
-  // Step 1: Private key
-  const privateKeyInput = await ask('Paste your Solana private key (base58): ');
+  // Step 1: Private key (accepts base58 or JSON byte array [1,2,3,...])
+  const privateKeyInput = await ask('Paste your Solana private key (base58 or [byte,array]): ');
   const password = await ask('Choose encryption password for keyfile: ');
 
   // Decode and encrypt immediately
   const bs58 = (await import('bs58')).default;
   const nacl = await import('tweetnacl');
   let keyBytes: Uint8Array;
-  try {
-    keyBytes = bs58.decode(privateKeyInput);
-  } catch {
-    console.error('ERROR: Invalid base58 private key.');
-    rl.close();
-    process.exit(1);
+  const trimmed = privateKeyInput.trim();
+
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    // JSON byte array format: [1,2,3,...,255]
+    try {
+      const numbers: number[] = JSON.parse(trimmed);
+      if (!Array.isArray(numbers) || numbers.length === 0 || numbers.some(n => typeof n !== 'number' || n < 0 || n > 255 || !Number.isInteger(n))) {
+        throw new Error('Invalid byte values');
+      }
+      keyBytes = Uint8Array.from(numbers);
+    } catch {
+      console.error('ERROR: Invalid byte array. Expected format: [1,2,3,...,255]');
+      rl.close();
+      process.exit(1);
+    }
+  } else {
+    // Base58 format
+    try {
+      keyBytes = bs58.decode(trimmed);
+    } catch {
+      console.error('ERROR: Invalid private key. Use base58 string or byte array [1,2,3,...].');
+      rl.close();
+      process.exit(1);
+    }
   }
 
   // Derive wallet address from key (ed25519 keypair is 64 bytes: secret+public)

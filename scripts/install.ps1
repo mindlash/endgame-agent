@@ -339,9 +339,18 @@ function Main {
     $env:AGENT_HOME = $AgentHome
     & endgame-agent setup
 
-    # 5. Start service
-    Write-Info "Starting agent service..."
-    & endgame-agent start
+    # 5. Start service (only if setup installed one)
+    try {
+        $taskQuery = schtasks /Query /TN "EndGameAgent" /FO CSV /NH 2>$null
+        if ($taskQuery) {
+            Write-Info "Starting agent service..."
+            & endgame-agent start
+        } else {
+            Write-Info "No background service installed. Start manually with: endgame-agent run"
+        }
+    } catch {
+        Write-Info "No background service installed. Start manually with: endgame-agent run"
+    }
 
     Write-Host ""
     Write-Host "=================================" -ForegroundColor Cyan

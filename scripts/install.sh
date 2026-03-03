@@ -388,9 +388,14 @@ main() {
   export AGENT_HOME
   endgame-agent setup
 
-  # 5. Start service
-  info "Starting agent service..."
-  endgame-agent start
+  # 5. Start service (only if setup installed one)
+  local plist_path="$HOME/Library/LaunchAgents/cash.endgame.agent.plist"
+  if [[ -f "$plist_path" ]]; then
+    info "Starting agent service..."
+    endgame-agent start
+  else
+    info "No background service installed. Start manually with: endgame-agent run"
+  fi
 
   echo ""
   echo "================================="
