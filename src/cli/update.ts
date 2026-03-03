@@ -108,11 +108,26 @@ export async function performUpdate(): Promise<void> {
   if (status.running) {
     console.log('Stopping service...');
     stopService();
-    await new Promise(r => setTimeout(r, 2000));
+    // Wait for process to fully exit (Windows holds file locks briefly after exit)
+    await new Promise(r => setTimeout(r, 5000));
   }
 
   // 5. Backup current app/ and deploy new one
-  if (existsSync(backupDir)) rmSync(backupDir, { recursive: true });
+  // Retry cleanup of old backup — Windows may hold file locks briefly
+  if (existsSync(backupDir)) {
+    for (let i = 0; i < 3; i++) {
+      try {
+        rmSync(backupDir, { recursive: true, force: true });
+        break;
+      } catch {
+        if (i < 2) await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    // If still exists, rename it out of the way
+    if (existsSync(backupDir)) {
+      try { renameSync(backupDir, backupDir + '-' + Date.now()); } catch { /* best effort */ }
+    }
+  }
   if (existsSync(appDir)) renameSync(appDir, backupDir);
   mkdirSync(appDir, { recursive: true });
 
@@ -132,9 +147,9 @@ export async function performUpdate(): Promise<void> {
     throw new Error(`Deploy failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // 6. Cleanup
-  rmSync(buildDir, { recursive: true, force: true });
-  if (existsSync(backupDir)) rmSync(backupDir, { recursive: true, force: true });
+  // 6. Cleanup (best effort — locked files on Windows are harmless leftovers)
+  try { rmSync(buildDir, { recursive: true, force: true }); } catch { /* ok */ }
+  try { if (existsSync(backupDir)) rmSync(backupDir, { recursive: true, force: true }); } catch { /* ok */ }
 
   // 7. Regenerate service wrappers + restart if it was running
   if (status.installed) {
