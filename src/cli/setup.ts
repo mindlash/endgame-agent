@@ -7,7 +7,7 @@
  */
 
 import * as readline from 'node:readline';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { platform } from 'node:os';
 import { encryptKey } from '../security/keystore.js';
@@ -510,8 +510,278 @@ Requires a paid Basic tier dev account ($5/month at developer.x.com).
   rl.close();
 }
 
-// Allow direct execution
-setup().catch(err => {
-  console.error('Setup failed:', err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+// ── Per-section reconfiguration ──────────────────────────────────
+
+const VALID_SECTIONS = new Set(['twitter', 'discord', 'telegram', 'llm']);
+
+function loadEnvFile(): Map<string, string> {
+  const envPath = join(resolveConfigDir(), '.env');
+  if (!existsSync(envPath)) return new Map();
+  const content = readFileSync(envPath, 'utf-8');
+  const map = new Map<string, string>();
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) continue;
+    map.set(trimmed.slice(0, eqIdx), trimmed.slice(eqIdx + 1));
+  }
+  return map;
+}
+
+function updateEnvFile(updates: Record<string, string>, removals?: string[]): void {
+  const map = loadEnvFile();
+
+  // Apply updates
+  for (const [key, value] of Object.entries(updates)) {
+    map.set(key, value);
+  }
+
+  // Apply removals
+  if (removals) {
+    for (const key of removals) {
+      map.delete(key);
+    }
+  }
+
+  // Rebuild MARKETING_CHANNELS from which channel vars exist
+  const channels: string[] = [];
+  if (map.has('TWITTER_API_KEY') && map.has('TWITTER_API_SECRET') &&
+      map.has('TWITTER_ACCESS_TOKEN') && map.has('TWITTER_ACCESS_TOKEN_SECRET')) {
+    channels.push('twitter');
+  }
+  if (map.has('DISCORD_WEBHOOK_URL')) {
+    channels.push('discord');
+  }
+  if (map.has('TELEGRAM_BOT_TOKEN') && map.has('TELEGRAM_CHAT_ID')) {
+    channels.push('telegram');
+  }
+
+  if (channels.length > 0) {
+    map.set('MARKETING_ENABLED', 'true');
+    map.set('MARKETING_CHANNELS', channels.join(','));
+  } else {
+    map.set('MARKETING_ENABLED', 'false');
+    map.delete('MARKETING_CHANNELS');
+  }
+
+  // Write back
+  const lines: string[] = [];
+  for (const [key, value] of map) {
+    lines.push(`${key}=${value}`);
+  }
+  const configDir = resolveConfigDir();
+  mkdirSync(configDir, { recursive: true });
+  const envPath = join(configDir, '.env');
+  writeFileSync(envPath, lines.join('\n') + '\n');
+  chmodSync(envPath, 0o600);
+}
+
+async function setupTwitterSection(ask: (q: string) => Promise<string>): Promise<void> {
+  console.log(`
+=== Reconfigure Twitter/X ===
+Requires a paid Basic tier dev account ($5/month at developer.x.com).
+
+  1. Sign up at https://developer.x.com -> subscribe to the Basic plan
+
+  2. Developer Portal -> Projects & Apps -> Create a new Project + App
+
+  3. IMPORTANT — Set "User authentication settings" to "Read and Write"
+     App permissions: "Read and Write" / Type: "Web App, Automated App or Bot"
+
+  4. Go to "Keys and tokens" tab:
+     a. Consumer Keys -> Regenerate -> copy "API Key" + "API Key Secret"
+     b. Authentication Tokens -> Generate -> copy "Access Token" + "Access Token Secret"
+
+  Common mistakes:
+  - Generating tokens BEFORE setting "Read and Write" = read-only tokens
+  - Using the Free tier = 401/403 errors (Free tier cannot post tweets)
+`);
+  let apiKey = await ask('  API Key (from Consumer Keys): ');
+  let apiSecret = await ask('  API Key Secret (from Consumer Keys): ');
+  let accessToken = await ask('  Access Token (from Authentication Tokens): ');
+  let accessTokenSecret = await ask('  Access Token Secret (from Authentication Tokens): ');
+
+  const testChoice = (await ask('  Test Twitter connection? (y/n): ')).trim().toLowerCase();
+  if (testChoice === 'y') {
+    process.stdout.write('  Testing (post + delete)...');
+    const err = await testTwitter(apiKey, apiSecret, accessToken, accessTokenSecret);
+    if (err) {
+      console.log(` FAILED\n  Error: ${err}`);
+      const retry = (await ask('  Re-enter credentials? (y/n): ')).trim().toLowerCase();
+      if (retry === 'y') {
+        apiKey = await ask('  API Key: ');
+        apiSecret = await ask('  API Key Secret: ');
+        accessToken = await ask('  Access Token: ');
+        accessTokenSecret = await ask('  Access Token Secret: ');
+      }
+    } else {
+      console.log(' OK');
+    }
+  }
+
+  updateEnvFile({
+    TWITTER_API_KEY: apiKey,
+    TWITTER_API_SECRET: apiSecret,
+    TWITTER_ACCESS_TOKEN: accessToken,
+    TWITTER_ACCESS_TOKEN_SECRET: accessTokenSecret,
+  });
+  console.log('Twitter configuration updated.');
+}
+
+async function setupDiscordSection(ask: (q: string) => Promise<string>): Promise<void> {
+  console.log(`
+=== Reconfigure Discord ===
+
+  1. Open Discord -> go to your server
+  2. Right-click channel -> Edit Channel -> Integrations -> Webhooks
+  3. Click "New Webhook" -> copy the URL
+`);
+  let webhookUrl = await ask('  Discord Webhook URL: ');
+
+  const testChoice = (await ask('  Test Discord connection? (y/n): ')).trim().toLowerCase();
+  if (testChoice === 'y') {
+    process.stdout.write('  Testing (post + delete)...');
+    const err = await testDiscord(webhookUrl);
+    if (err) {
+      console.log(` FAILED\n  Error: ${err}`);
+      const retry = (await ask('  Re-enter webhook URL? (y/n): ')).trim().toLowerCase();
+      if (retry === 'y') {
+        webhookUrl = await ask('  Discord Webhook URL: ');
+      }
+    } else {
+      console.log(' OK');
+    }
+  }
+
+  updateEnvFile({ DISCORD_WEBHOOK_URL: webhookUrl });
+  console.log('Discord configuration updated.');
+}
+
+async function setupTelegramSection(ask: (q: string) => Promise<string>): Promise<void> {
+  console.log(`
+=== Reconfigure Telegram ===
+
+  1. Open Telegram, search for @BotFather, send /newbot
+  2. Follow prompts to name it, copy the bot token
+  3. Add the bot to your channel/group as admin
+  4. For Chat ID: send a message in the chat, then visit:
+     https://api.telegram.org/bot<TOKEN>/getUpdates
+     Look for "chat":{"id": NUMBER}
+`);
+  let botToken = await ask('  Telegram Bot Token (from @BotFather): ');
+  let chatId = await ask('  Telegram Chat/Channel ID: ');
+
+  const testChoice = (await ask('  Test Telegram connection? (y/n): ')).trim().toLowerCase();
+  if (testChoice === 'y') {
+    process.stdout.write('  Testing (post + delete)...');
+    const err = await testTelegram(botToken, chatId);
+    if (err) {
+      console.log(` FAILED\n  Error: ${err}`);
+      const retry = (await ask('  Re-enter credentials? (y/n): ')).trim().toLowerCase();
+      if (retry === 'y') {
+        botToken = await ask('  Telegram Bot Token: ');
+        chatId = await ask('  Telegram Chat/Channel ID: ');
+      }
+    } else {
+      console.log(' OK');
+    }
+  }
+
+  updateEnvFile({
+    TELEGRAM_BOT_TOKEN: botToken,
+    TELEGRAM_CHAT_ID: chatId,
+  });
+  console.log('Telegram configuration updated.');
+}
+
+async function setupLlmSection(ask: (q: string) => Promise<string>): Promise<void> {
+  console.log(`
+=== Reconfigure LLM Provider ===
+
+  claude  — Best quality. ~$3/MTok. Get key: https://console.anthropic.com/settings/keys
+  openai  — Good quality. ~$0.15/MTok. Get key: https://platform.openai.com/api-keys
+  gemini  — FREE (15 req/min). Get key: https://aistudio.google.com/apikeys
+  groq    — FREE (30 req/min, open models). Get key: https://console.groq.com/keys
+  ollama  — FREE, runs locally. Install: https://ollama.com then: ollama pull llama3.2
+`);
+
+  let llmProvider = '';
+  while (!VALID_LLM_PROVIDERS.has(llmProvider)) {
+    llmProvider = (await ask('LLM provider (claude/openai/gemini/groq/ollama): ')).trim().toLowerCase();
+  }
+
+  let llmApiKey = '';
+  let ollamaBaseUrl = '';
+  if (llmProvider === 'ollama') {
+    ollamaBaseUrl = (await ask('Ollama base URL (press Enter for http://localhost:11434): ')).trim() || 'http://localhost:11434';
+  } else {
+    llmApiKey = await ask(`${llmProvider} API key: `);
+  }
+
+  const testChoice = (await ask('Test LLM connection? (y/n): ')).trim().toLowerCase();
+  if (testChoice === 'y') {
+    process.stdout.write('  Testing...');
+    const err = await testLlm(llmProvider as LlmProvider, llmApiKey, ollamaBaseUrl || undefined);
+    if (err) {
+      console.log(` FAILED\n  Error: ${err}`);
+      const retry = (await ask('  Re-enter credentials? (y/n): ')).trim().toLowerCase();
+      if (retry === 'y') {
+        if (llmProvider === 'ollama') {
+          ollamaBaseUrl = (await ask('  Ollama base URL: ')).trim() || 'http://localhost:11434';
+        } else {
+          llmApiKey = await ask(`  ${llmProvider} API key: `);
+        }
+      }
+    } else {
+      console.log(' OK');
+    }
+  }
+
+  const updates: Record<string, string> = { LLM_PROVIDER: llmProvider };
+  const removals: string[] = [];
+
+  if (llmProvider === 'ollama') {
+    updates['OLLAMA_BASE_URL'] = ollamaBaseUrl;
+    removals.push('LLM_API_KEY');
+  } else {
+    updates['LLM_API_KEY'] = llmApiKey;
+    removals.push('OLLAMA_BASE_URL');
+  }
+
+  updateEnvFile(updates, removals);
+  console.log('LLM configuration updated.');
+}
+
+export async function setupSection(section: string): Promise<void> {
+  if (!VALID_SECTIONS.has(section)) {
+    console.error(`Unknown section: ${section}`);
+    console.log(`Valid sections: ${[...VALID_SECTIONS].join(', ')}`);
+    process.exit(1);
+  }
+
+  const envPath = join(resolveConfigDir(), '.env');
+  if (!existsSync(envPath)) {
+    console.error('No existing config found. Run full setup first: endgame-agent setup');
+    process.exit(1);
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q: string): Promise<string> =>
+    new Promise(resolve => rl.question(q, resolve));
+
+  try {
+    switch (section) {
+      case 'twitter':  await setupTwitterSection(ask); break;
+      case 'discord':  await setupDiscordSection(ask); break;
+      case 'telegram': await setupTelegramSection(ask); break;
+      case 'llm':      await setupLlmSection(ask); break;
+    }
+
+    const channels = loadEnvFile().get('MARKETING_CHANNELS') ?? 'none';
+    console.log(`\nChannels: ${channels}`);
+    console.log('Done! Restart the agent for changes to take effect.');
+  } finally {
+    rl.close();
+  }
+}

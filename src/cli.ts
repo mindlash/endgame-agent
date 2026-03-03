@@ -20,7 +20,13 @@ const command = process.argv[2] ?? 'run';
 
 switch (command) {
   case 'setup': {
-    await import('./cli/setup.js');
+    const section = process.argv[3]?.replace(/^--/, '');
+    const { setup, setupSection } = await import('./cli/setup.js');
+    if (section) {
+      await setupSection(section);
+    } else {
+      await setup();
+    }
     break;
   }
 
@@ -111,6 +117,10 @@ Usage: endgame-agent [command]
 Commands:
   run          Start agent in foreground (default)
   setup        Interactive setup wizard
+               --twitter   Reconfigure Twitter only
+               --discord   Reconfigure Discord only
+               --telegram  Reconfigure Telegram only
+               --llm       Reconfigure LLM provider only
   status       Health check report
   logs [n]     Tail agent logs (default: last 50 lines)
   start        Start background service
