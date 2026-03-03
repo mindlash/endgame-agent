@@ -780,7 +780,22 @@ export async function setupSection(section: string): Promise<void> {
 
     const channels = loadEnvFile().get('MARKETING_CHANNELS') ?? 'none';
     console.log(`\nChannels: ${channels}`);
-    console.log('Done! Restart the agent for changes to take effect.');
+
+    const { getStatus, stopService, startService } = await import('./service.js');
+    const status = getStatus();
+    if (status.running) {
+      const restart = (await ask('Agent is running. Restart now to apply changes? (y/n): ')).trim().toLowerCase();
+      if (restart === 'y') {
+        stopService();
+        await new Promise(r => setTimeout(r, 2000));
+        startService();
+        console.log('Agent restarted with new config.');
+      } else {
+        console.log('Done! Restart the agent later to apply changes.');
+      }
+    } else {
+      console.log('Done! Start the agent with: endgame-agent start');
+    }
   } finally {
     rl.close();
   }
