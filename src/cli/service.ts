@@ -237,6 +237,12 @@ function startWindows(): void {
   if (!status.installed) {
     throw new Error('Service not installed. Run `endgame-agent setup` first and choose "Install as background service".');
   }
+  // Ensure VBS launcher exists (self-heal after updates from older versions)
+  const home = resolveHome();
+  const vbsPath = join(home, 'bin', 'run-agent.vbs');
+  if (!existsSync(vbsPath)) {
+    installWindows();
+  }
   execFileSync('schtasks', ['/Run', '/TN', TASK_NAME], { stdio: 'pipe' });
   log.info('Service started via Task Scheduler');
 }
