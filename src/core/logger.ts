@@ -13,13 +13,20 @@ const LEVELS: Record<LogLevel, number> = {
 };
 
 let minLevel: LogLevel = 'info';
+let suppressed = false;
 
 export function setLogLevel(level: LogLevel): void {
   minLevel = level;
 }
 
+/** Suppress all log output (used during interactive setup). */
+export function suppressLogs(): void { suppressed = true; }
+
+/** Resume log output. */
+export function unsuppressLogs(): void { suppressed = false; }
+
 function log(level: LogLevel, module: string, message: string, data?: Record<string, unknown>): void {
-  if (LEVELS[level] < LEVELS[minLevel]) return;
+  if (suppressed || LEVELS[level] < LEVELS[minLevel]) return;
   const entry = {
     ts: new Date().toISOString(),
     level,

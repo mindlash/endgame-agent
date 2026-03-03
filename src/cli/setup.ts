@@ -15,6 +15,7 @@ import { generatePersonalitySeed } from '../marketing/engine.js';
 import { resolveDataDir, resolveConfigDir } from '../core/config.js';
 import { isCredentialStoreAvailable, storePassword } from './credentials.js';
 import { installService } from './service.js';
+import { suppressLogs, unsuppressLogs } from '../core/logger.js';
 import type { LlmProvider } from '../marketing/llm.js';
 
 const DATA_DIR = resolveDataDir();
@@ -124,6 +125,7 @@ async function testLlm(provider: LlmProvider, apiKey: string, ollamaBaseUrl?: st
 }
 
 async function testTwitter(apiKey: string, apiSecret: string, accessToken: string, accessTokenSecret: string): Promise<string | null> {
+  suppressLogs();
   try {
     const { TwitterChannel } = await import('../marketing/channels/twitter.js');
     const channel = new TwitterChannel({ apiKey, apiSecret, accessToken, accessTokenSecret });
@@ -132,10 +134,13 @@ async function testTwitter(apiKey: string, apiSecret: string, accessToken: strin
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
+  } finally {
+    unsuppressLogs();
   }
 }
 
 async function testDiscord(webhookUrl: string): Promise<string | null> {
+  suppressLogs();
   try {
     const { DiscordChannel } = await import('../marketing/channels/discord.js');
     const channel = new DiscordChannel(webhookUrl);
@@ -144,10 +149,13 @@ async function testDiscord(webhookUrl: string): Promise<string | null> {
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
+  } finally {
+    unsuppressLogs();
   }
 }
 
 async function testTelegram(botToken: string, chatId: string): Promise<string | null> {
+  suppressLogs();
   try {
     const { TelegramChannel } = await import('../marketing/channels/telegram.js');
     const channel = new TelegramChannel(botToken, chatId);
@@ -156,6 +164,8 @@ async function testTelegram(botToken: string, chatId: string): Promise<string | 
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
+  } finally {
+    unsuppressLogs();
   }
 }
 
@@ -225,7 +235,10 @@ export async function setup(): Promise<void> {
   if (isCredentialStoreAvailable()) {
     const useKeychain = (await ask('Store password in system keychain for auto-start? (y/n): ')).trim().toLowerCase();
     if (useKeychain === 'y') {
-      if (storePassword(password)) {
+      suppressLogs();
+      const stored = storePassword(password);
+      unsuppressLogs();
+      if (stored) {
         console.log('Password stored securely in system credential store.');
       } else {
         console.log('Failed to store password. You will need to provide it manually.');
@@ -476,10 +489,13 @@ Requires a paid Basic tier dev account ($5/month at developer.x.com).
       useCaffeinate = preventSleep === 'y';
     }
     try {
+      suppressLogs();
       installService({ useCaffeinate });
+      unsuppressLogs();
       console.log('Background service installed. It will start on next login.');
       console.log('Start now with: endgame-agent start');
     } catch (err) {
+      unsuppressLogs();
       console.log(`Service install failed: ${err instanceof Error ? err.message : String(err)}`);
       console.log('You can start the agent manually with: endgame-agent run');
     }
