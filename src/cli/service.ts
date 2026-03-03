@@ -168,11 +168,12 @@ function installWindows(): void {
   // Create a wrapper .cmd that sets AGENT_HOME
   const cmdPath = join(home, 'bin', 'run-agent.cmd');
   mkdirSync(join(home, 'bin'), { recursive: true });
+  const logFile = join(home, 'logs', 'agent.log');
   writeFileSync(cmdPath, [
     '@echo off',
     `set AGENT_HOME=${home}`,
     `set NODE_ENV=production`,
-    `"${nodePath}" "${entryPoint}" run`,
+    `"${nodePath}" "${entryPoint}" run >> "${logFile}" 2>&1`,
   ].join('\r\n') + '\r\n');
 
   // Create scheduled task via schtasks
