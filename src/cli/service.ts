@@ -38,9 +38,10 @@ function getNodePath(): string {
 
 function getAgentEntryPoint(): string {
   const home = resolveHome();
-  const bundled = join(home, 'app', 'endgame-agent.js');
-  if (existsSync(bundled)) return bundled;
-  // Dev mode: use compiled output
+  // Installed layout: dist/* copied into app/
+  const installed = join(home, 'app', 'cli.js');
+  if (existsSync(installed)) return installed;
+  // Dev mode: use compiled output directly
   return join(home, 'dist', 'cli.js');
 }
 
