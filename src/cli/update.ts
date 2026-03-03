@@ -9,7 +9,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, mkdirSync, renameSync, rmSync, cpSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveHome } from '../core/config.js';
-import { stopService, startService, getStatus } from './service.js';
+import { stopService, startService, installService, getStatus } from './service.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('update');
@@ -136,7 +136,11 @@ export async function performUpdate(): Promise<void> {
   rmSync(buildDir, { recursive: true, force: true });
   if (existsSync(backupDir)) rmSync(backupDir, { recursive: true, force: true });
 
-  // 7. Restart service if it was running
+  // 7. Regenerate service wrappers + restart if it was running
+  if (status.installed) {
+    console.log('Updating service configuration...');
+    installService();
+  }
   if (status.running) {
     console.log('Restarting service...');
     startService();
