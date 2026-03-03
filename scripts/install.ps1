@@ -188,10 +188,30 @@ function Install-AgentFromSource {
     Push-Location $buildDir
     try {
         Invoke-Npm -Arguments @("install", "--ignore-scripts")
-        # argon2 needs a separate rebuild for its native addon
-        Write-Info "Rebuilding native modules..."
-        Invoke-Npm -Arguments @("rebuild", "argon2")
         Write-Info "Dependencies installed"
+
+        # argon2 needs its native addon verified — run node-gyp-build directly
+        # with the full path to node.exe (bypasses npm's script runner which
+        # spawns cmd.exe and loses our custom PATH)
+        Write-Info "Verifying native modules..."
+        $nodeExe = Get-NodeExe
+        $ngybJs = Join-Path $buildDir "node_modules\node-gyp-build\bin.js"
+        $argon2Dir = Join-Path $buildDir "node_modules\argon2"
+        if ((Test-Path $ngybJs) -and (Test-Path $argon2Dir)) {
+            Push-Location $argon2Dir
+            $prevPref = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
+            & $nodeExe $ngybJs
+            $ErrorActionPreference = $prevPref
+            Pop-Location
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "argon2 native module verification failed (may still work with prebuilt binary)"
+            } else {
+                Write-Info "Native modules verified"
+            }
+        } else {
+            Write-Warn "node-gyp-build not found, skipping native module verification"
+        }
 
         # TypeScript build — use tsc from the build's own node_modules
         Write-Info "Compiling TypeScript..."

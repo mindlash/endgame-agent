@@ -226,8 +226,24 @@ install_agent_from_source() {
   done || true
   # Re-run to ensure exit code is captured correctly
   run_npm install --ignore-scripts >/dev/null 2>&1
-  run_npm rebuild argon2 >/dev/null 2>&1
   info "Dependencies installed"
+
+  # argon2 needs its native addon verified — run node-gyp-build directly
+  # with the full path to node (bypasses npm's script runner PATH issues)
+  info "Verifying native modules..."
+  local node_bin
+  node_bin=$(get_node_bin)
+  local ngyb_js="$build_dir/node_modules/node-gyp-build/bin.js"
+  local argon2_dir="$build_dir/node_modules/argon2"
+  if [[ -f "$ngyb_js" ]] && [[ -d "$argon2_dir" ]]; then
+    if (cd "$argon2_dir" && "$node_bin" "$ngyb_js" >/dev/null 2>&1); then
+      info "Native modules verified"
+    else
+      warn "argon2 native module verification failed (may still work with prebuilt binary)"
+    fi
+  else
+    warn "node-gyp-build not found, skipping native module verification"
+  fi
 
   # TypeScript build
   info "Compiling TypeScript..."
