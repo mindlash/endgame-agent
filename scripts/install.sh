@@ -220,12 +220,12 @@ install_agent_from_source() {
 
   # npm install (using node directly, not system npm)
   info "Installing dependencies (npm install)..."
-  run_npm install --ignore-scripts 2>&1 | while IFS= read -r line; do
+  run_npm install --ignore-scripts --no-audit --no-fund 2>&1 | while IFS= read -r line; do
     # Show progress dots but suppress npm noise
     [[ "$line" == *"added"* ]] && info "$line"
   done || true
   # Re-run to ensure exit code is captured correctly
-  run_npm install --ignore-scripts >/dev/null 2>&1
+  run_npm install --ignore-scripts --no-audit --no-fund >/dev/null 2>&1
   info "Dependencies installed"
 
   # argon2 needs its native addon verified — run node-gyp-build directly

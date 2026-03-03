@@ -187,7 +187,7 @@ function Install-AgentFromSource {
     Write-Info "Installing dependencies (npm install)..."
     Push-Location $buildDir
     try {
-        Invoke-Npm -Arguments @("install", "--ignore-scripts")
+        Invoke-Npm -Arguments @("install", "--ignore-scripts", "--no-audit", "--no-fund")
         Write-Info "Dependencies installed"
 
         # argon2 needs its native addon verified — run node-gyp-build directly
@@ -201,7 +201,7 @@ function Install-AgentFromSource {
             Push-Location $argon2Dir
             $prevPref = $ErrorActionPreference
             $ErrorActionPreference = "SilentlyContinue"
-            & $nodeExe $ngybJs
+            & $nodeExe $ngybJs 2>$null
             $ErrorActionPreference = $prevPref
             Pop-Location
             if ($LASTEXITCODE -ne 0) {
